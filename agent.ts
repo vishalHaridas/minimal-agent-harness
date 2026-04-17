@@ -1,9 +1,11 @@
 import path from "node:path";
+import { read } from "./tools";
 
 type CliConfig = {
   workspaceRoot: string;
   extraPaths: string[];
   prompt: string;
+  debugReadPath: string | null;
   model: string;
   hasApiKey: boolean;
 };
@@ -17,6 +19,7 @@ function fail(message: string): never {
 function parseArgs(argv: string[]): CliConfig {
   let workspaceRoot = "";
   const extraPaths: string[] = [];
+  let debugReadPath: string | null = null;
   const promptParts: string[] = [];
 
   for (let index = 0; index < argv.length; index += 1) {
@@ -37,6 +40,12 @@ function parseArgs(argv: string[]): CliConfig {
       continue;
     }
 
+    if (arg === "--read") {
+      debugReadPath = argv[index + 1] ?? "";
+      index += 1;
+      continue;
+    }
+
     promptParts.push(arg);
   }
 
@@ -44,7 +53,7 @@ function parseArgs(argv: string[]): CliConfig {
     fail("Missing required --cwd path.");
   }
 
-  if (promptParts.length === 0) {
+  if (!debugReadPath && promptParts.length === 0) {
     fail(
       'Missing prompt text. Example: bun run agent.ts --cwd . "summarize this folder"',
     );
@@ -57,6 +66,7 @@ function parseArgs(argv: string[]): CliConfig {
     workspaceRoot: path.resolve(workspaceRoot),
     extraPaths: extraPaths.map((value) => path.resolve(value)),
     prompt: promptParts.join(" "),
+    debugReadPath,
     model,
     hasApiKey: apiKey.length > 0,
   };
@@ -74,8 +84,26 @@ function printTrace(config: CliConfig) {
   console.log(
     `- openrouterApiKey: ${config.hasApiKey ? "present" : "missing"}`,
   );
-  console.log(`- prompt: ${config.prompt}`);
+  console.log(`- prompt: ${config.prompt || "(none)"}`);
+  console.log(`- debugReadPath: ${config.debugReadPath ?? "(none)"}`);
 }
 
-const config = parseArgs(process.argv.slice(2));
-printTrace(config);
+async function main() {
+  const config = parseArgs(process.argv.slice(2));
+  printTrace(config);
+
+  if (config.debugReadPath) {
+    console.log("");
+    console.log("read tool");
+    const result = await read(
+      {
+        workspaceRoot: config.workspaceRoot,
+        extraPaths: config.extraPaths,
+      },
+      config.debugReadPath,
+    );
+    console.log(JSON.stringify(result, null, 2));
+  }
+}
+
+await main();
