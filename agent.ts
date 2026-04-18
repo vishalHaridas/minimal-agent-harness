@@ -1,10 +1,12 @@
 import path from "node:path";
-import { read, write } from "./tools/index";
+import { exec, read, write } from "./tools/index";
 
 type CliConfig = {
   workspaceRoot: string;
   extraPaths: string[];
   prompt: string;
+  debugExecCommand: string | null;
+  debugExecTimeoutMs: number;
   debugReadPath: string | null;
   debugWritePath: string | null;
   debugWriteContent: string | null;
@@ -21,6 +23,8 @@ function fail(message: string): never {
 function parseArgs(argv: string[]): CliConfig {
   let workspaceRoot = "";
   const extraPaths: string[] = [];
+  let debugExecCommand: string | null = null;
+  let debugExecTimeoutMs = 30_000;
   let debugReadPath: string | null = null;
   let debugWritePath: string | null = null;
   let debugWriteContent: string | null = null;
@@ -50,6 +54,22 @@ function parseArgs(argv: string[]): CliConfig {
       continue;
     }
 
+    if (arg === "--exec") {
+      debugExecCommand = argv[index + 1] ?? "";
+      index += 1;
+      continue;
+    }
+
+    if (arg === "--timeout-ms") {
+      const value = Number(argv[index + 1] ?? "");
+      if (!Number.isFinite(value) || value < 1) {
+        fail("Invalid --timeout-ms value.");
+      }
+      debugExecTimeoutMs = value;
+      index += 1;
+      continue;
+    }
+
     if (arg === "--write") {
       debugWritePath = argv[index + 1] ?? "";
       index += 1;
@@ -69,7 +89,12 @@ function parseArgs(argv: string[]): CliConfig {
     fail("Missing required --cwd path.");
   }
 
-  if (!debugReadPath && !debugWritePath && promptParts.length === 0) {
+  if (
+    !debugExecCommand &&
+    !debugReadPath &&
+    !debugWritePath &&
+    promptParts.length === 0
+  ) {
     fail(
       'Missing prompt text. Example: bun run agent.ts --cwd . "summarize this folder"',
     );
@@ -86,6 +111,8 @@ function parseArgs(argv: string[]): CliConfig {
     workspaceRoot: path.resolve(workspaceRoot),
     extraPaths: extraPaths.map((value) => path.resolve(value)),
     prompt: promptParts.join(" "),
+    debugExecCommand,
+    debugExecTimeoutMs,
     debugReadPath,
     debugWritePath,
     debugWriteContent,
@@ -107,6 +134,8 @@ function printTrace(config: CliConfig) {
     `- openrouterApiKey: ${config.hasApiKey ? "present" : "missing"}`,
   );
   console.log(`- prompt: ${config.prompt || "(none)"}`);
+  console.log(`- debugExecCommand: ${config.debugExecCommand ?? "(none)"}`);
+  console.log(`- debugExecTimeoutMs: ${config.debugExecTimeoutMs}`);
   console.log(`- debugReadPath: ${config.debugReadPath ?? "(none)"}`);
   console.log(`- debugWritePath: ${config.debugWritePath ?? "(none)"}`);
   console.log(`- debugWriteContent: ${config.debugWriteContent ?? "(none)"}`);
@@ -115,6 +144,17 @@ function printTrace(config: CliConfig) {
 async function main() {
   const config = parseArgs(process.argv.slice(2));
   printTrace(config);
+
+  if (config.debugExecCommand) {
+    console.log("");
+    console.log("exec tool");
+    const result = await exec(
+      config.workspaceRoot,
+      config.debugExecCommand,
+      config.debugExecTimeoutMs,
+    );
+    console.log(JSON.stringify(result, null, 2));
+  }
 
   if (config.debugReadPath) {
     console.log("");
