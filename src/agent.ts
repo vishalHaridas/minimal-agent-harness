@@ -209,7 +209,7 @@ function parseArgs(argv: string[]): CliConfig {
     promptParts.length === 0
   ) {
     fail(
-      'Missing prompt text. Example: bun run agent.ts --cwd . "summarize this folder"',
+      'Missing prompt text. Example: bun run src/agent.ts --cwd . "summarize this folder"',
     );
   }
 

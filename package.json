@@ -3,7 +3,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "start": "bun run agent.ts",
+    "start": "bun run src/agent.ts",
     "check": "bunx tsc --noEmit",
     "lint": "bunx eslint .",
     "format": "bunx prettier . --write",
