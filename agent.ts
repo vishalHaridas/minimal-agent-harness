@@ -1,4 +1,5 @@
 import path from "node:path";
+import { callOpenRouter, type OpenRouterMessage } from "./openrouter";
 import { exec, read, write } from "./tools/index";
 
 type CliConfig = {
@@ -181,6 +182,31 @@ async function main() {
       config.debugWriteContent,
     );
     console.log(JSON.stringify(result, null, 2));
+  }
+
+  if (config.prompt) {
+    console.log("");
+    console.log("llm call");
+
+    // Phase 1 keeps the message history to one user message so the provider
+    // request/response path is easy to inspect before the tool loop exists.
+    const messages: OpenRouterMessage[] = [
+      {
+        role: "user",
+        content: config.prompt,
+      },
+    ];
+
+    const response = await callOpenRouter({
+      model: config.model,
+      messages,
+    });
+
+    console.log("");
+    console.log("assistant message");
+    console.log(
+      JSON.stringify(response.choices?.[0]?.message ?? { content: null }, null, 2),
+    );
   }
 }
 

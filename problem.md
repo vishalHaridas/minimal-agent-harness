@@ -1,25 +1,23 @@
 ## CURRENT
 
-- Problem statement: Build a minimal CLI coding-agent harness in TypeScript, run with Bun, that calls OpenRouter for model responses and can use a tiny set of local tools.
-- Scope boundaries: In scope for the first implementation is a single-process CLI, one agent loop, OpenRouter chat completion calls, and three tools only: `read`, `write`, and `bash`. Out of scope are memory systems, multi-agent orchestration, approval flows, streaming UX polish, sandboxing, retries, resumability, and production architecture.
+- Problem statement: Build the first ugly-prototype provider step for the minimal CLI harness: a raw OpenRouter chat completion call that is easy to trace, debug, and verify before adding the tool loop.
+- Scope boundaries: In scope for this phase is a single OpenRouter request path, minimal message input, raw response output, and explicit debug logging so the API call can be tested end-to-end. Out of scope for this phase are tool execution, the agent loop, streaming, retries, abstractions, provider fallbacks, and production cleanup.
 - Minimal data model:
-  - `user_input`: raw prompt text from the CLI
-  - `message_history`: ordered chat messages sent to and received from the model
-  - `tool_call`: requested tool name plus JSON arguments from the model
-  - `tool_result`: stdout/stderr or file contents returned back into the loop
-  - `run_state`: current turn status until the agent exits with a final text answer
+  - `provider_input`: `model` plus ordered `messages`
+  - `provider_request`: raw JSON body sent to OpenRouter
+  - `provider_response`: raw parsed JSON returned by OpenRouter
+  - `provider_trace`: debug output showing request body, HTTP status, and response body
 - Data flow:
-  - CLI reads prompt
-  - harness sends prompt plus tool schemas to OpenRouter
-  - model either returns text or asks for a tool
-  - harness executes the tool locally and appends the result
-  - loop repeats until final text is returned
+  - CLI or harness builds `messages`
+  - `openrouter.ts` sends `model + messages` to OpenRouter chat completions
+  - provider returns parsed JSON with minimal reshaping
+  - harness prints trace output so the request/response can be inspected directly
 - Lifecycle:
-  - Create: `user_input`, assistant messages, tool calls, tool results
-  - Read: local files through `read`, subprocess output through `bash`
-  - Update: `message_history`, files through `write`
-  - Discard: in-memory run state at process exit
-- First implementation target: one runnable file plus minimal config that supports `bun run agent.ts "your prompt"` and visibly traces the request -> tool call -> tool result -> final answer path.
+  - Create: request body, response body, trace lines
+  - Read: env vars for API key/model and HTTP response body
+  - Update: none beyond in-memory variables for a single request
+  - Discard: all provider state at process exit
+- First implementation target: one `openrouter.ts` entry point plus minimal `agent.ts` wiring that can send a prompt to OpenRouter and let the developer verify the integration by inspecting the exact request/response path.
 
 ## RECENT
 
