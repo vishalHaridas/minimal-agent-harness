@@ -57,8 +57,36 @@ export type CallOpenRouterInput = {
 
 const OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions";
 
-function stringifyJson(value: unknown): string {
-  return JSON.stringify(value, null, 2);
+type OpenRouterErrorBody = {
+  error?: {
+    message?: string;
+    code?: number | string;
+    metadata?: {
+      raw?: string;
+      provider_name?: string;
+      is_byok?: boolean;
+    };
+  };
+};
+
+export class OpenRouterRequestError extends Error {
+  status: number;
+  providerMessage: string | null;
+
+  constructor(status: number, message: string, providerMessage?: string | null) {
+    super(message);
+    this.name = "OpenRouterRequestError";
+    this.status = status;
+    this.providerMessage = providerMessage ?? null;
+  }
+}
+
+function getErrorBody(value: unknown): OpenRouterErrorBody | null {
+  if (!value || typeof value !== "object" || !("error" in value)) {
+    return null;
+  }
+
+  return value as OpenRouterErrorBody;
 }
 
 export function summarizeChoices(response: OpenRouterChatCompletionResponse) {
@@ -79,19 +107,12 @@ export async function callOpenRouter(
     throw new Error("Missing OPENROUTER_API_KEY.");
   }
 
-  // Keep the request body explicit so Phase 1 shows the raw provider contract.
   const requestBody = {
     model: input.model,
     messages: input.messages,
     tools: input.tools,
     stream: false,
   };
-
-  console.log("");
-  console.log("openrouter request");
-  console.log(`- url: ${OPENROUTER_URL}`);
-  console.log(`- model: ${input.model}`);
-  console.log(stringifyJson(requestBody));
 
   const response = await fetch(OPENROUTER_URL, {
     method: "POST",
@@ -102,13 +123,13 @@ export async function callOpenRouter(
     body: JSON.stringify(requestBody),
   });
 
-  // Read the body once, then log only the fields that matter for inspection.
   const responseText = await response.text();
-
-  let parsedBody: OpenRouterChatCompletionResponse;
+  let parsedBody: OpenRouterChatCompletionResponse | OpenRouterErrorBody;
 
   try {
-    parsedBody = JSON.parse(responseText) as OpenRouterChatCompletionResponse;
+    parsedBody = JSON.parse(responseText) as
+      | OpenRouterChatCompletionResponse
+      | OpenRouterErrorBody;
   } catch {
     throw new Error(
       `OpenRouter returned a non-JSON response: ${responseText.slice(0, 500)}`,
@@ -116,19 +137,18 @@ export async function callOpenRouter(
   }
 
   if (!response.ok) {
-    throw new Error(
-      `OpenRouter request failed with status ${response.status}: ${responseText.slice(0, 500)}`,
+    const errorBody = getErrorBody(parsedBody);
+    const providerMessage =
+      errorBody?.error?.metadata?.raw ??
+      errorBody?.error?.message ??
+      responseText.slice(0, 500);
+
+    throw new OpenRouterRequestError(
+      response.status,
+      `OpenRouter request failed with status ${response.status}.`,
+      providerMessage,
     );
   }
 
-  console.log("");
-  console.log("openrouter response");
-  console.log(`- status: ${response.status} ${response.statusText}`);
-  console.log(
-    stringifyJson({
-      choices: summarizeChoices(parsedBody),
-    }),
-  );
-
-  return parsedBody;
+  return parsedBody as OpenRouterChatCompletionResponse;
 }

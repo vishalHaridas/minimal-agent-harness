@@ -2,11 +2,13 @@ import path from "node:path";
 import readline from "node:readline/promises";
 import {
   callOpenRouter,
+  OpenRouterRequestError,
   summarizeChoices,
   type OpenRouterMessage,
   type OpenRouterToolCall,
   type OpenRouterToolDefinition,
 } from "./openrouter";
+import type { ExecResult, ReadResult, WriteResult } from "./tools/index";
 import { exec, read, summarizePatchScript, write } from "./tools/index";
 
 type CliConfig = {
@@ -99,6 +101,26 @@ function fail(message: string): never {
   console.error(message);
   process.exit(1);
   throw new Error(message);
+}
+
+function formatTopLevelError(error: unknown) {
+  if (error instanceof OpenRouterRequestError) {
+    if (error.status === 429) {
+      const detail = error.providerMessage
+        ? error.providerMessage
+        : "Rate limit reached. Retry shortly.";
+      return `OpenRouter rate limit (429). ${detail}`;
+    }
+
+    const detail = error.providerMessage ? ` ${error.providerMessage}` : "";
+    return `OpenRouter request failed (${error.status}).${detail}`;
+  }
+
+  if (error instanceof Error) {
+    return error.message;
+  }
+
+  return String(error);
 }
 
 async function promptForWorkspaceRoot(): Promise<string> {
@@ -213,22 +235,119 @@ function parseArgs(argv: string[]): CliConfig {
 }
 
 function printTrace(config: CliConfig) {
-  console.log("minimal-agent-harness \n");
-  console.log("trace");
-  console.log(`- workspaceRoot: ${config.workspaceRoot}`);
+  console.log(`[harness] cwd=${config.workspaceRoot} model=${config.model}`);
+  console.log("");
+}
+
+function quoteInline(value: string) {
+  return JSON.stringify(value);
+}
+
+function collapseWhitespace(value: string) {
+  return value.replace(/\s+/g, " ").trim();
+}
+
+function summarizeExecOutput(result: ExecResult) {
+  const output = result.stdout || result.stderr || result.error || "";
+  const collapsed = collapseWhitespace(output);
+
+  if (!collapsed) {
+    return result.ok ? "no output" : "command failed";
+  }
+
+  const fileMatch = collapsed.match(/(\d+)\s+File\(s\).*?(\d+)\s+Dir\(s\)/i);
+
+  if (fileMatch) {
+    const fileLabel = Number(fileMatch[1]) === 1 ? "file" : "files";
+    const dirLabel = Number(fileMatch[2]) === 1 ? "subdir" : "subdirs";
+    return `${fileMatch[1]} ${fileLabel}, ${fileMatch[2]} ${dirLabel}`;
+  }
+
+  return collapsed;
+}
+
+function summarizeReadResult(result: ReadResult) {
+  if (!result.ok) {
+    return collapseWhitespace(result.error ?? "read failed");
+  }
+
+  const suffix = result.truncated ? ", truncated" : "";
+  return `${result.bytesRead} bytes${suffix}`;
+}
+
+function summarizeWriteResult(
+  result: WriteResult & { patchSummary?: unknown[] },
+) {
+  if (!result.ok) {
+    return collapseWhitespace(result.error ?? "write failed");
+  }
+
+  const operationCount =
+    result.details?.length ?? result.patchSummary?.length ?? 0;
+  const label = operationCount === 1 ? "change" : "changes";
+  return `${result.bytesWritten} bytes, ${operationCount} ${label}`;
+}
+
+function summarizeToolResult(toolName: string, result: unknown) {
+  if (toolName === "exec") {
+    return summarizeExecOutput(result as ExecResult);
+  }
+
+  if (toolName === "read") {
+    return summarizeReadResult(result as ReadResult);
+  }
+
+  if (toolName === "write") {
+    return summarizeWriteResult(
+      result as WriteResult & { patchSummary?: unknown[] },
+    );
+  }
+
+  if (
+    result &&
+    typeof result === "object" &&
+    "error" in result &&
+    typeof result.error === "string"
+  ) {
+    return collapseWhitespace(result.error);
+  }
+
+  return collapseWhitespace(JSON.stringify(result));
+}
+
+function logAssistantToolCall(iteration: number, toolCall: OpenRouterToolCall) {
+  const args = parseToolArguments(toolCall);
+  const command =
+    typeof args.command === "string" ? args.command : JSON.stringify(args);
+
   console.log(
-    `- extraPaths: ${config.extraPaths.length === 0 ? "(none)" : config.extraPaths.join(", ")}`,
+    `t${iteration}  assistant  tool_call ${toolCall.function.name}   ${quoteInline(command)}`,
   );
-  console.log(`- model: ${config.model}`);
+}
+
+function logToolResult(iteration: number, toolName: string, result: unknown) {
+  const ok =
+    result &&
+    typeof result === "object" &&
+    "ok" in result &&
+    result.ok === true;
+  const status = (ok ? "ok" : "error").padEnd(16, " ");
+  const exitCode =
+    result &&
+    typeof result === "object" &&
+    "exitCode" in result &&
+    typeof result.exitCode === "number"
+      ? `  exit=${result.exitCode}`
+      : "";
+
   console.log(
-    `- openrouterApiKey: ${config.hasApiKey ? "present" : "missing"}`,
+    `t${iteration}  ${toolName.padEnd(10, " ")} ${status}${exitCode}  ${summarizeToolResult(toolName, result)}`,
   );
-  console.log(`- prompt: ${config.prompt || "(none)"}`);
-  console.log(`- debugExecCommand: ${config.debugExecCommand ?? "(none)"}`);
-  console.log(`- debugExecTimeoutMs: ${config.debugExecTimeoutMs}`);
-  console.log(`- debugReadPath: ${config.debugReadPath ?? "(none)"}`);
-  console.log(`- debugWritePath: ${config.debugWritePath ?? "(none)"}`);
-  console.log(`- debugWriteContent: ${config.debugWriteContent ?? "(none)"}`);
+}
+
+function logAssistantFinal(iteration: number, responseText: string | null) {
+  const content = responseText ? collapseWhitespace(responseText) : "(no content)";
+  console.log(`t${iteration}  assistant  final            ${content}`);
 }
 
 function getRequiredString(
@@ -284,6 +403,7 @@ function parseToolArguments(toolCall: OpenRouterToolCall) {
 
 async function runToolCall(
   config: CliConfig,
+  iteration: number,
   toolCall: OpenRouterToolCall,
 ): Promise<OpenRouterMessage> {
   const args = parseToolArguments(toolCall);
@@ -292,20 +412,7 @@ async function runToolCall(
     workspaceRoot: config.workspaceRoot!,
     extraPaths: config.extraPaths,
   };
-
-  console.log("");
-  console.log("tool call");
-  console.log(
-    JSON.stringify(
-      {
-        id: toolCall.id,
-        name: toolName,
-        arguments: args,
-      },
-      null,
-      2,
-    ),
-  );
+  logAssistantToolCall(iteration, toolCall);
 
   let result: unknown;
   try {
@@ -323,11 +430,7 @@ async function runToolCall(
         throw new Error('Tool "write" requires at least one patch operation.');
       }
 
-      const writeResult = await write(
-        toolContext,
-        patchSummary[0].path,
-        patch,
-      );
+      const writeResult = await write(toolContext, patchSummary[0].path, patch);
 
       result = {
         ...writeResult,
@@ -352,9 +455,7 @@ async function runToolCall(
     };
   }
 
-  console.log("");
-  console.log("tool result");
-  console.log(JSON.stringify(result, null, 2));
+  logToolResult(iteration, toolName, result);
 
   return {
     role: "tool",
@@ -376,9 +477,6 @@ async function runAgentLoop(config: CliConfig) {
   ];
 
   for (let iteration = 1; iteration <= MAX_AGENT_ITERATIONS; iteration += 1) {
-    console.log("");
-    console.log(`agent iteration ${iteration}`);
-
     const response = await callOpenRouter({
       model: config.model,
       messages,
@@ -401,16 +499,15 @@ async function runAgentLoop(config: CliConfig) {
 
     const toolCalls = assistantMessage.tool_calls ?? [];
     if (toolCalls.length === 0) {
-      console.log("");
-      console.log("assistant message");
-      console.log(
-        JSON.stringify(summarizeChoices(response)[0] ?? null, null, 2),
+      logAssistantFinal(
+        iteration,
+        summarizeChoices(response)[0]?.content ?? null,
       );
       return;
     }
 
     for (const toolCall of toolCalls) {
-      messages.push(await runToolCall(config, toolCall));
+      messages.push(await runToolCall(config, iteration, toolCall));
     }
   }
 
@@ -436,19 +533,15 @@ async function main() {
   printTrace(config);
 
   if (config.debugExecCommand) {
-    console.log("");
-    console.log("exec tool");
     const result = await exec(
       workspaceRoot,
       config.debugExecCommand,
       config.debugExecTimeoutMs,
     );
-    console.log(JSON.stringify(result, null, 2));
+    logToolResult(0, "exec", result);
   }
 
   if (config.debugReadPath) {
-    console.log("");
-    console.log("read tool");
     const result = await read(
       {
         workspaceRoot,
@@ -456,12 +549,10 @@ async function main() {
       },
       config.debugReadPath,
     );
-    console.log(JSON.stringify(result, null, 2));
+    logToolResult(0, "read", result);
   }
 
   if (config.debugWritePath && config.debugWriteContent !== null) {
-    console.log("");
-    console.log("write tool");
     const result = await write(
       {
         workspaceRoot,
@@ -470,14 +561,16 @@ async function main() {
       config.debugWritePath,
       config.debugWriteContent,
     );
-    console.log(JSON.stringify(result, null, 2));
+    logToolResult(0, "write", result);
   }
 
   if (config.prompt) {
-    console.log("");
-    console.log("agent loop");
     await runAgentLoop(config);
   }
 }
 
-await main();
+try {
+  await main();
+} catch (error) {
+  fail(formatTopLevelError(error));
+}
