@@ -58,6 +58,12 @@ type ParsedHunk = {
   lines: ParsedHunkLine[];
 };
 
+export type PatchSummary = {
+  operation: "add" | "delete" | "update" | "move";
+  path: string;
+  moveTo?: string;
+};
+
 export function isWithinAllowedRoots(
   targetPath: string,
   allowedRoots: string[],
@@ -112,7 +118,7 @@ export function resolveAllowedPath(context: ToolContext, targetPath: string) {
   return resolvedPath;
 }
 
-function parsePatchScript(patchText: string): ParsedPatch[] {
+export function parsePatchScript(patchText: string): ParsedPatch[] {
   const normalized = patchText.replace(/\r\n/g, "\n");
   const lines = normalized.split("\n");
 
@@ -224,6 +230,14 @@ function parsePatchScript(patchText: string): ParsedPatch[] {
   }
 
   return patches;
+}
+
+export function summarizePatchScript(patchText: string): PatchSummary[] {
+  return parsePatchScript(patchText).map((patch) => ({
+    operation: patch.operation,
+    path: patch.path,
+    moveTo: patch.operation === "update" ? patch.moveTo : undefined,
+  }));
 }
 
 function findMatch(lines: string[], target: string[]) {

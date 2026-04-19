@@ -1,6 +1,7 @@
 export { read } from "./read";
 export { write } from "./write";
 export { exec } from "./exec";
+export { summarizePatchScript } from "./shared";
 export type { ReadResult, ToolContext } from "./read";
 export type { WriteResult } from "./write";
 export type { ExecResult } from "./exec";

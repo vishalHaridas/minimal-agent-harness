@@ -1,7 +1,31 @@
+export type OpenRouterToolCall = {
+  id: string;
+  type: "function";
+  function: {
+    name: string;
+    arguments: string;
+  };
+};
+
+export type OpenRouterToolDefinition = {
+  type: "function";
+  function: {
+    name: string;
+    description: string;
+    parameters: {
+      type: "object";
+      properties: Record<string, unknown>;
+      required?: string[];
+      additionalProperties?: boolean;
+    };
+  };
+};
+
 export type OpenRouterMessage = {
   role: "system" | "user" | "assistant" | "tool";
-  content: string;
+  content: string | null;
   tool_call_id?: string;
+  tool_calls?: OpenRouterToolCall[];
 };
 
 export type OpenRouterChatCompletionResponse = {
@@ -15,7 +39,7 @@ export type OpenRouterChatCompletionResponse = {
       content?: string | null;
       reasoning?: string | null;
       reasoning_details?: unknown[];
-      tool_calls?: unknown[];
+      tool_calls?: OpenRouterToolCall[];
     };
   }>;
   usage?: {
@@ -28,6 +52,7 @@ export type OpenRouterChatCompletionResponse = {
 export type CallOpenRouterInput = {
   model: string;
   messages: OpenRouterMessage[];
+  tools?: OpenRouterToolDefinition[];
 };
 
 const OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions";
@@ -38,8 +63,10 @@ function stringifyJson(value: unknown): string {
 
 export function summarizeChoices(response: OpenRouterChatCompletionResponse) {
   return (response.choices ?? []).map((choice) => ({
+    finishReason: choice.finish_reason ?? null,
     reasoning: choice.message?.reasoning ?? null,
     content: choice.message?.content ?? null,
+    toolCalls: choice.message?.tool_calls ?? [],
   }));
 }
 
@@ -56,6 +83,7 @@ export async function callOpenRouter(
   const requestBody = {
     model: input.model,
     messages: input.messages,
+    tools: input.tools,
     stream: false,
   };
 
@@ -82,12 +110,14 @@ export async function callOpenRouter(
   try {
     parsedBody = JSON.parse(responseText) as OpenRouterChatCompletionResponse;
   } catch {
-    throw new Error("OpenRouter returned a non-JSON response.");
+    throw new Error(
+      `OpenRouter returned a non-JSON response: ${responseText.slice(0, 500)}`,
+    );
   }
 
   if (!response.ok) {
     throw new Error(
-      `OpenRouter request failed with status ${response.status}.`,
+      `OpenRouter request failed with status ${response.status}: ${responseText.slice(0, 500)}`,
     );
   }
 

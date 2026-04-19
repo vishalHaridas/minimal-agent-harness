@@ -1,22 +1,26 @@
 ## CURRENT
 
-- Problem statement: Make the CLI easier to run by allowing `--cwd` to be omitted and prompting once for the working directory before the agent flow continues.
-- Scope boundaries: In scope for this phase is a single stdin prompt fallback for the primary workspace root. Out of scope for this phase are prompts for extra allowed paths, prompt-history UX, validation beyond non-empty input, and broader loop redesign.
+- Problem statement: Replace the current one-shot LLM call with a minimal agent loop that can expose local tools to the model, execute requested tool calls, and continue until the model returns a final assistant message.
+- Scope boundaries: In scope for this phase are OpenRouter tool-call request/response wiring, a small local tool registry for `read`, `write`, and `exec`, loop control in the CLI, and trace output that makes each step inspectable. Out of scope are streaming, retries, multi-turn chat UX, tool parallelism, approval flows, and new tools.
 - Minimal data model:
-  - `workspace_root`: primary directory the harness runs commands and path tools against
-  - `cli_args`: optional `--cwd`, optional `--allow`, prompt text, and debug flags
-  - `cwd_prompt`: one stdin question used only when `--cwd` is absent
+  - `messages`: ordered chat history including `user`, `assistant`, and `tool` messages
+  - `tool_definitions`: the JSON schemas advertised to the provider for `read`, `write`, and `exec`
+  - `tool_call`: provider-emitted request containing tool name, call id, and JSON arguments
+  - `tool_result`: local execution result serialized back into a `tool` message
+  - `loop_state`: current iteration count and stop condition
 - Data flow:
-  - CLI parses args
-  - if `--cwd` is present, resolve it immediately
-  - if `--cwd` is absent, ask the user which directory to work on
-  - harness continues with the resolved workspace root and existing tool/provider flow
+  - CLI parses args and resolves the workspace root
+  - harness creates initial `messages` with the user prompt
+  - provider receives `messages` plus `tool_definitions`
+  - if the provider returns tool calls, the harness executes them locally and appends `tool` messages
+  - harness calls the provider again with the expanded history
+  - loop stops when the provider returns an assistant message without tool calls or a max-iteration guard is reached
 - Lifecycle:
-  - Create: resolved workspace root and one optional stdin answer
-  - Read: CLI args and stdin text
-  - Update: in-memory config before trace output begins
-  - Discard: prompt interface and process-local config at exit
-- First implementation target: patch `agent.ts` so the existing harness can prompt for the workspace root when `--cwd` is missing, without changing extra path handling.
+  - Create: initial messages, tool definitions, and loop state
+  - Read: provider response, tool call arguments, and local filesystem/process state
+  - Update: append assistant/tool messages and advance iteration count
+  - Discard: process-local loop state at exit
+- First implementation target: patch `openrouter.ts` and `agent.ts` to support one explicit tool-call loop using the existing `read`, `write`, and `exec` implementations without introducing new abstraction layers.
 
 ## RECENT
 
