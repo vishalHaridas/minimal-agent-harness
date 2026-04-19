@@ -1,4 +1,5 @@
 import path from "node:path";
+import readline from "node:readline/promises";
 import {
   callOpenRouter,
   summarizeChoices,
@@ -7,7 +8,7 @@ import {
 import { exec, read, write } from "./tools/index";
 
 type CliConfig = {
-  workspaceRoot: string;
+  workspaceRoot: string | null;
   extraPaths: string[];
   prompt: string;
   debugExecCommand: string | null;
@@ -23,6 +24,20 @@ function fail(message: string): never {
   console.error(message);
   process.exit(1);
   throw new Error(message);
+}
+
+async function promptForWorkspaceRoot(): Promise<string> {
+  // Keep the fallback explicit: if --cwd is missing, ask once on stdin.
+  const rl = readline.createInterface({
+    input: process.stdin,
+    output: process.stdout,
+  });
+
+  try {
+    return (await rl.question("Which directory should I work on? ")).trim();
+  } finally {
+    rl.close();
+  }
 }
 
 function parseArgs(argv: string[]): CliConfig {
@@ -90,10 +105,6 @@ function parseArgs(argv: string[]): CliConfig {
     promptParts.push(arg);
   }
 
-  if (!workspaceRoot) {
-    fail("Missing required --cwd path.");
-  }
-
   if (
     !debugExecCommand &&
     !debugReadPath &&
@@ -113,7 +124,7 @@ function parseArgs(argv: string[]): CliConfig {
   const apiKey = process.env.OPENROUTER_API_KEY || "";
 
   return {
-    workspaceRoot: path.resolve(workspaceRoot),
+    workspaceRoot: workspaceRoot ? path.resolve(workspaceRoot) : null,
     extraPaths: extraPaths.map((value) => path.resolve(value)),
     prompt: promptParts.join(" "),
     debugExecCommand,
@@ -148,13 +159,25 @@ function printTrace(config: CliConfig) {
 
 async function main() {
   const config = parseArgs(process.argv.slice(2));
+
+  if (!config.workspaceRoot) {
+    const promptedWorkspaceRoot = await promptForWorkspaceRoot();
+
+    if (!promptedWorkspaceRoot) {
+      fail("Missing working directory. Pass --cwd or enter a directory at the prompt.");
+    }
+
+    config.workspaceRoot = path.resolve(promptedWorkspaceRoot);
+  }
+
+  const workspaceRoot = config.workspaceRoot;
   printTrace(config);
 
   if (config.debugExecCommand) {
     console.log("");
     console.log("exec tool");
     const result = await exec(
-      config.workspaceRoot,
+      workspaceRoot,
       config.debugExecCommand,
       config.debugExecTimeoutMs,
     );
@@ -166,7 +189,7 @@ async function main() {
     console.log("read tool");
     const result = await read(
       {
-        workspaceRoot: config.workspaceRoot,
+        workspaceRoot,
         extraPaths: config.extraPaths,
       },
       config.debugReadPath,
@@ -179,7 +202,7 @@ async function main() {
     console.log("write tool");
     const result = await write(
       {
-        workspaceRoot: config.workspaceRoot,
+        workspaceRoot,
         extraPaths: config.extraPaths,
       },
       config.debugWritePath,

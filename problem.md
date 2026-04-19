@@ -1,26 +1,26 @@
 ## CURRENT
 
-- Problem statement: Build the first ugly-prototype provider step for the minimal CLI harness: a raw OpenRouter chat completion call that is easy to trace, debug, and verify before adding the tool loop.
-- Scope boundaries: In scope for this phase is a single OpenRouter request path, minimal message input, raw response output, and explicit debug logging so the API call can be tested end-to-end. Out of scope for this phase are tool execution, the agent loop, streaming, retries, abstractions, provider fallbacks, and production cleanup.
+- Problem statement: Make the CLI easier to run by allowing `--cwd` to be omitted and prompting once for the working directory before the agent flow continues.
+- Scope boundaries: In scope for this phase is a single stdin prompt fallback for the primary workspace root. Out of scope for this phase are prompts for extra allowed paths, prompt-history UX, validation beyond non-empty input, and broader loop redesign.
 - Minimal data model:
-  - `provider_input`: `model` plus ordered `messages`
-  - `provider_request`: raw JSON body sent to OpenRouter
-  - `provider_response`: raw parsed JSON returned by OpenRouter
-  - `provider_trace`: debug output showing request body, HTTP status, and response body
+  - `workspace_root`: primary directory the harness runs commands and path tools against
+  - `cli_args`: optional `--cwd`, optional `--allow`, prompt text, and debug flags
+  - `cwd_prompt`: one stdin question used only when `--cwd` is absent
 - Data flow:
-  - CLI or harness builds `messages`
-  - `openrouter.ts` sends `model + messages` to OpenRouter chat completions
-  - provider returns parsed JSON with minimal reshaping
-  - harness prints trace output so the request/response can be inspected directly
+  - CLI parses args
+  - if `--cwd` is present, resolve it immediately
+  - if `--cwd` is absent, ask the user which directory to work on
+  - harness continues with the resolved workspace root and existing tool/provider flow
 - Lifecycle:
-  - Create: request body, response body, trace lines
-  - Read: env vars for API key/model and HTTP response body
-  - Update: none beyond in-memory variables for a single request
-  - Discard: all provider state at process exit
-- First implementation target: one `openrouter.ts` entry point plus minimal `agent.ts` wiring that can send a prompt to OpenRouter and let the developer verify the integration by inspecting the exact request/response path.
+  - Create: resolved workspace root and one optional stdin answer
+  - Read: CLI args and stdin text
+  - Update: in-memory config before trace output begins
+  - Discard: prompt interface and process-local config at exit
+- First implementation target: patch `agent.ts` so the existing harness can prompt for the workspace root when `--cwd` is missing, without changing extra path handling.
 
 ## RECENT
 
+- Logging was reduced to show only `reasoning` and `content` from OpenRouter choices instead of the raw provider body.
 - Initial project definition based on user choices: OpenRouter, minimal local tools, Node + TypeScript executed with Bun.
 
 ## ARCHIVE
