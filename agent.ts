@@ -1,5 +1,9 @@
 import path from "node:path";
-import { callOpenRouter, type OpenRouterMessage } from "./openrouter";
+import {
+  callOpenRouter,
+  summarizeChoices,
+  type OpenRouterMessage,
+} from "./openrouter";
 import { exec, read, write } from "./tools/index";
 
 type CliConfig = {
@@ -204,9 +208,7 @@ async function main() {
 
     console.log("");
     console.log("assistant message");
-    console.log(
-      JSON.stringify(response.choices?.[0]?.message ?? { content: null }, null, 2),
-    );
+    console.log(JSON.stringify(summarizeChoices(response)[0] ?? null, null, 2));
   }
 }
 

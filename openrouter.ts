@@ -13,6 +13,8 @@ export type OpenRouterChatCompletionResponse = {
     message?: {
       role?: string;
       content?: string | null;
+      reasoning?: string | null;
+      reasoning_details?: unknown[];
       tool_calls?: unknown[];
     };
   }>;
@@ -32,6 +34,13 @@ const OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions";
 
 function stringifyJson(value: unknown): string {
   return JSON.stringify(value, null, 2);
+}
+
+export function summarizeChoices(response: OpenRouterChatCompletionResponse) {
+  return (response.choices ?? []).map((choice) => ({
+    reasoning: choice.message?.reasoning ?? null,
+    content: choice.message?.content ?? null,
+  }));
 }
 
 export async function callOpenRouter(
@@ -65,13 +74,8 @@ export async function callOpenRouter(
     body: JSON.stringify(requestBody),
   });
 
-  // Read the raw body once, print it, then parse it with minimal reshaping.
+  // Read the body once, then log only the fields that matter for inspection.
   const responseText = await response.text();
-
-  console.log("");
-  console.log("openrouter response");
-  console.log(`- status: ${response.status} ${response.statusText}`);
-  console.log(responseText);
 
   let parsedBody: OpenRouterChatCompletionResponse;
 
@@ -86,6 +90,15 @@ export async function callOpenRouter(
       `OpenRouter request failed with status ${response.status}.`,
     );
   }
+
+  console.log("");
+  console.log("openrouter response");
+  console.log(`- status: ${response.status} ${response.statusText}`);
+  console.log(
+    stringifyJson({
+      choices: summarizeChoices(parsedBody),
+    }),
+  );
 
   return parsedBody;
 }
