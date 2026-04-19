@@ -136,19 +136,6 @@ async function promptForWorkspaceRoot(): Promise<string> {
   }
 }
 
-async function promptForUserPrompt(): Promise<string> {
-  const rl = readline.createInterface({
-    input: process.stdin,
-    output: process.stdout,
-  });
-
-  try {
-    return (await rl.question("")).trim();
-  } finally {
-    rl.close();
-  }
-}
-
 function parseArgs(argv: string[]): CliConfig {
   let workspaceRoot = "";
   const extraPaths: string[] = [];
@@ -467,20 +454,12 @@ async function runToolCall(
   };
 }
 
-async function runAgentLoop(config: CliConfig, prompt: string) {
-  const messages: OpenRouterMessage[] = [
-    {
-      role: "system",
-      content: SYSTEM_PROMPT,
-    },
-    {
-      role: "user",
-      content: prompt,
-    },
-  ];
-
+async function runAgentLoop(
+  config: CliConfig,
+  messages: OpenRouterMessage[],
+  iterationOffset = 0,
+) {
   let iteration = 1;
-
   while (true) {
     const response = await callOpenRouter({
       model: config.model,
@@ -505,14 +484,50 @@ async function runAgentLoop(config: CliConfig, prompt: string) {
     const toolCalls = assistantMessage.tool_calls ?? [];
     if (toolCalls.length === 0) {
       logAssistantFinal(summarizeChoices(response)[0]?.content ?? null);
-      return;
+      return iterationOffset + iteration;
     }
 
     for (const toolCall of toolCalls) {
-      messages.push(await runToolCall(config, iteration, toolCall));
+      messages.push(
+        await runToolCall(config, iterationOffset + iteration, toolCall),
+      );
     }
 
     iteration += 1;
+  }
+}
+
+async function runInteractiveSession(config: CliConfig) {
+  const rl = readline.createInterface({
+    input: process.stdin,
+    output: process.stdout,
+  });
+  const messages: OpenRouterMessage[] = [
+    {
+      role: "system",
+      content: SYSTEM_PROMPT,
+    },
+  ];
+  let pendingPrompt = config.prompt;
+  let iterationOffset = 0;
+
+  try {
+    while (true) {
+      const prompt = (pendingPrompt || (await rl.question(""))).trim();
+      pendingPrompt = "";
+
+      if (!prompt) {
+        continue;
+      }
+
+      messages.push({
+        role: "user",
+        content: prompt,
+      });
+      iterationOffset = await runAgentLoop(config, messages, iterationOffset);
+    }
+  } finally {
+    rl.close();
   }
 }
 
@@ -573,13 +588,7 @@ async function main() {
     return;
   }
 
-  const prompt = config.prompt || (await promptForUserPrompt());
-
-  if (!prompt) {
-    fail("Missing prompt text.");
-  }
-
-  await runAgentLoop(config, prompt);
+  await runInteractiveSession(config);
 }
 
 try {
