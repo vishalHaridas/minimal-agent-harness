@@ -24,7 +24,6 @@ type CliConfig = {
   hasApiKey: boolean;
 };
 
-const MAX_AGENT_ITERATIONS = 8;
 const SYSTEM_PROMPT =
   "You are a local agent working inside the allowed workspace roots. Read files before patching them, send exact apply-patch text to the write tool, and never invent file contents, command output, or write results.";
 
@@ -137,6 +136,19 @@ async function promptForWorkspaceRoot(): Promise<string> {
   }
 }
 
+async function promptForUserPrompt(): Promise<string> {
+  const rl = readline.createInterface({
+    input: process.stdin,
+    output: process.stdout,
+  });
+
+  try {
+    return (await rl.question("")).trim();
+  } finally {
+    rl.close();
+  }
+}
+
 function parseArgs(argv: string[]): CliConfig {
   let workspaceRoot = "";
   const extraPaths: string[] = [];
@@ -200,17 +212,6 @@ function parseArgs(argv: string[]): CliConfig {
     }
 
     promptParts.push(arg);
-  }
-
-  if (
-    !debugExecCommand &&
-    !debugReadPath &&
-    !debugWritePath &&
-    promptParts.length === 0
-  ) {
-    fail(
-      'Missing prompt text. Example: bun run src/agent.ts --cwd . "summarize this folder"',
-    );
   }
 
   if (debugWritePath && debugWriteContent === null) {
@@ -464,7 +465,7 @@ async function runToolCall(
   };
 }
 
-async function runAgentLoop(config: CliConfig) {
+async function runAgentLoop(config: CliConfig, prompt: string) {
   const messages: OpenRouterMessage[] = [
     {
       role: "system",
@@ -472,11 +473,13 @@ async function runAgentLoop(config: CliConfig) {
     },
     {
       role: "user",
-      content: config.prompt,
+      content: prompt,
     },
   ];
 
-  for (let iteration = 1; iteration <= MAX_AGENT_ITERATIONS; iteration += 1) {
+  let iteration = 1;
+
+  while (true) {
     const response = await callOpenRouter({
       model: config.model,
       messages,
@@ -509,13 +512,16 @@ async function runAgentLoop(config: CliConfig) {
     for (const toolCall of toolCalls) {
       messages.push(await runToolCall(config, iteration, toolCall));
     }
-  }
 
-  fail(`Agent loop stopped after ${MAX_AGENT_ITERATIONS} iterations.`);
+    iteration += 1;
+  }
 }
 
 async function main() {
   const config = parseArgs(process.argv.slice(2));
+  const hasDebugAction = Boolean(
+    config.debugExecCommand || config.debugReadPath || config.debugWritePath,
+  );
 
   if (!config.workspaceRoot) {
     const promptedWorkspaceRoot = await promptForWorkspaceRoot();
@@ -564,9 +570,17 @@ async function main() {
     logToolResult(0, "write", result);
   }
 
-  if (config.prompt) {
-    await runAgentLoop(config);
+  if (!config.prompt && hasDebugAction) {
+    return;
   }
+
+  const prompt = config.prompt || (await promptForUserPrompt());
+
+  if (!prompt) {
+    fail("Missing prompt text.");
+  }
+
+  await runAgentLoop(config, prompt);
 }
 
 try {
