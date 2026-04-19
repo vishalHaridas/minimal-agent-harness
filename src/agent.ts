@@ -346,9 +346,10 @@ function logToolResult(iteration: number, toolName: string, result: unknown) {
   );
 }
 
-function logAssistantFinal(iteration: number, responseText: string | null) {
-  const content = responseText ? collapseWhitespace(responseText) : "(no content)";
-  console.log(`t${iteration}  assistant  final            ${content}`);
+function logAssistantFinal(responseText: string | null) {
+  console.log("---");
+  console.log(responseText ?? "(no content)");
+  console.log("---");
 }
 
 function getRequiredString(
@@ -413,6 +414,7 @@ async function runToolCall(
     workspaceRoot: config.workspaceRoot!,
     extraPaths: config.extraPaths,
   };
+  console.log("---");
   logAssistantToolCall(iteration, toolCall);
 
   let result: unknown;
@@ -502,10 +504,7 @@ async function runAgentLoop(config: CliConfig, prompt: string) {
 
     const toolCalls = assistantMessage.tool_calls ?? [];
     if (toolCalls.length === 0) {
-      logAssistantFinal(
-        iteration,
-        summarizeChoices(response)[0]?.content ?? null,
-      );
+      logAssistantFinal(summarizeChoices(response)[0]?.content ?? null);
       return;
     }
 
