@@ -40,6 +40,18 @@ export type Session = {
   lastError: string | null;
 };
 
+export type SessionSnapshot = {
+  id: string;
+  status: "idle" | "running" | "completed" | "failed";
+  iterationOffset: number;
+  messageCount: number;
+  eventCount: number;
+  lastUserMessage: string | null;
+  lastAssistantMessage: string | null;
+  lastError: string | null;
+  updatedAt: string;
+};
+
 export class SessionManager {
   private readonly session: Session;
   private nextEventSeq: number;
@@ -80,6 +92,18 @@ export class SessionManager {
     return structuredClone(payload);
   }
 
+  private getLastMessageContent(role: "user" | "assistant") {
+    for (let index = this.session.messages.length - 1; index >= 0; index -= 1) {
+      const message = this.session.messages[index];
+
+      if (message.role === role) {
+        return message.content;
+      }
+    }
+
+    return null;
+  }
+
   private emit(type: SessionEvent["type"], payload: unknown) {
     const event: SessionEvent = {
       seq: this.nextEventSeq,
@@ -92,6 +116,20 @@ export class SessionManager {
     this.nextEventSeq += 1;
     this.session.events.push(event);
     this.session.updatedAt = event.timestamp;
+  }
+
+  getSnapshot(): SessionSnapshot {
+    return {
+      id: this.session.id,
+      status: this.session.status,
+      iterationOffset: this.session.iterationOffset,
+      messageCount: this.session.messages.length,
+      eventCount: this.session.events.length,
+      lastUserMessage: this.getLastMessageContent("user"),
+      lastAssistantMessage: this.getLastMessageContent("assistant"),
+      lastError: this.session.lastError,
+      updatedAt: this.session.updatedAt,
+    };
   }
 
   private addUserInput(prompt: string) {
