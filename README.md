@@ -34,13 +34,21 @@ The session continues until you stop it with `Ctrl+C`.
 
 ```text
 src/
-  agent.ts
-  openrouter.ts
-  tools/
-    exec.ts
-    read.ts
-    shared.ts
-    write.ts
+  clients/
+    agent.ts
+  core/
+    session-manager.ts
+    session-runner.ts
+  adapters/
+    llm/
+      openrouter.ts
+    tools/
+      exec.ts
+      read.ts
+      shared.ts
+      write.ts
+  shared/
+    session.ts
 
 package.json
 tsconfig.json
@@ -48,12 +56,15 @@ eslint.config.js
 .env.example
 ```
 
-- `src/agent.ts`: CLI entrypoint, prompt loop, agent loop, tool dispatch, console output
-- `src/openrouter.ts`: OpenRouter request/response handling and provider error formatting
-- `src/tools/exec.ts`: local shell command execution
-- `src/tools/read.ts`: text file reads
-- `src/tools/write.ts`: patch-based file edits
-- `src/tools/shared.ts`: allowed-path checks, patch parsing, and shared helpers
+- `src/clients/agent.ts`: debug CLI entrypoint, terminal prompt loop, and event-driven console rendering
+- `src/core/session-manager.ts`: in-memory session state, event storage, subscriptions, and snapshots
+- `src/core/session-runner.ts`: bounded agent loop and tool-call orchestration
+- `src/adapters/llm/openrouter.ts`: OpenRouter request/response handling and provider error formatting
+- `src/adapters/tools/exec.ts`: local shell command execution
+- `src/adapters/tools/read.ts`: text file reads
+- `src/adapters/tools/write.ts`: patch-based file edits
+- `src/adapters/tools/shared.ts`: allowed-path checks, patch parsing, and shared helpers
+- `src/shared/session.ts`: shared session, event, and snapshot contracts
 - `.env.example`: environment variable example
 
 ## How To Run
