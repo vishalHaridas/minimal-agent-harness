@@ -1,16 +1,17 @@
 ## CURRENT
 
-- The new runtime center will be a single in-process `SessionManager` that owns one volatile session, not the CLI entrypoint.
-- `submitInput()` will append the user message into session state, emit `session.input_added`, and automatically start the runner if the session is idle.
-- While the runner is active, later inputs are appended and left queued; the session stays single-threaded and processes work sequentially.
-- The `SessionRunner` will execute the current bounded agent loop against OpenRouter and the existing `read`, `write`, and `exec` tools, but all progress will be surfaced as emitted events instead of direct inline CLI tracing.
-- `getSnapshot()` will return the current full session state for debug inspection.
-- Subscribers are session-scoped only in V1 and receive full payloads for every emitted event.
-- Tool failures are data, not fatal boundaries: the failed result is appended into session history, emitted, and then the LLM gets another turn.
-- The CLI remains as a debug client only: create session, submit input, subscribe to events, and print snapshots/events to the console.
+- The codebase now has explicit top-level boundaries: `src/clients`, `src/core`, `src/adapters`, and `src/shared`.
+- `src/core/session-manager.ts` owns one in-memory volatile session, event storage, event replay on subscribe, snapshot generation, and the interactive session loop.
+- `src/core/session-runner.ts` owns the bounded agent loop and emits runtime facts for LLM requests, LLM responses, assistant messages, and tool calls/results.
+- `src/adapters/llm/openrouter.ts` is the provider boundary and `src/adapters/tools/*` is the local capability boundary.
+- `src/shared/session.ts` holds the session-facing contracts so the core files do not import each other in circles.
+- Logging no longer happens inside the runtime. `src/clients/agent.ts` subscribes to session events and reconstructs the console trace from emitted payloads.
+- `getSnapshot()` returns a compact session summary for inspection rather than exposing the mutable session object directly.
+- Tool failures are still data, not fatal boundaries: the failed result is appended into session history, emitted, and then the LLM gets another turn.
 
 ## RECENT
 
-- Rewrite target changed from "CLI with loop" to "server-style session runtime with debug CLI client".
+- The subscriber phase completed: session events are stored in memory, replayed to late subscribers, and consumed by the CLI for logging.
+- The structural rewrite phase completed: the flat `src/*.ts` layout was replaced by explicit client/core/adapter/shared boundaries.
 
 ## ARCHIVE

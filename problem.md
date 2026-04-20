@@ -10,23 +10,24 @@
   - `tool_call`: provider-emitted request containing tool name, call id, and JSON arguments
   - `tool_result`: local execution result serialized back into session state and emitted as an event
 - Data flow:
-  - server creates a session with model/tool/workspace configuration
+  - client creates a session manager with model/tool/workspace configuration
+  - client subscribes before execution so early events are not lost
   - caller submits input to that session
   - session manager appends a `session.input_added` event
-  - if the session is idle, runner starts automatically; if already running, the input remains queued
   - runner executes the agent step loop for that session
   - each meaningful transition emits an event such as `session.started`, `llm.requested`, `llm.responded`, `tool.called`, `tool.completed`, `assistant.message`, `session.completed`, or `session.failed`
   - tool failures are appended into session history and emitted as events, then the LLM gets another turn
-  - subscribers receive events live and can also inspect the current session snapshot
+  - subscribers receive events live, can replay stored events on subscribe, and can also inspect the current session snapshot
 - Lifecycle:
   - Create: session, initial config, and first input
   - Read: session state, event stream, provider response, and local tool state
   - Update: append messages, session status, and emitted events
   - Discard: process-local sessions at server shutdown
-- First implementation target: split the current `agent.ts` into a minimal `SessionManager`, `session-runner`, and `events` module plus a thin debug CLI, keeping the existing OpenRouter client and local tools but moving loop ownership into the session runner.
+- First implementation target: establish explicit `clients`, `core`, `adapters`, and `shared` boundaries so the CLI stays a debug client and the runtime stops owning presentation concerns.
 
 ## RECENT
 
-- User decisions locked the first rewrite shape: one session only, automatic start on input, queued inputs while running, session-scoped subscriptions only, `getSnapshot()` for state reads, full event payload logging, and tool failures returned to the LLM instead of aborting the session.
+- The codebase now uses explicit boundaries: `src/clients` for the debug CLI, `src/core` for session runtime, `src/adapters` for OpenRouter and local tools, and `src/shared` for session contracts.
+- Logging responsibility moved entirely to the client. The runtime now emits facts only, and the CLI reconstructs the trace by subscribing to session events.
 
 ## ARCHIVE
