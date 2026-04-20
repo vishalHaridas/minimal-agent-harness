@@ -1,13 +1,16 @@
 ## CURRENT
 
-- The CLI now builds a short two-sentence `system` prompt plus the user prompt, sends both to OpenRouter, and advertises three local tools: `read`, `write`, and `exec`.
-- The harness runs a bounded sequential agent loop: append the assistant message, execute any returned tool calls locally, append `tool` messages with JSON-stringified results, and repeat until the assistant returns without tool calls.
-- The `write` tool now takes one model-facing input named `patch`. The harness validates that patch using the local apply-patch parser, derives the touched paths from the patch itself, and returns the parsed patch summary alongside the write result.
-- `read`, `write`, and `exec` still use the existing local implementations and workspace-root restrictions; the new loop only changes how the model can request them.
-- `--allow` behavior is unchanged: extra allowed roots are still opt-in flags only and are not prompted for interactively.
+- The new runtime center will be a single in-process `SessionManager` that owns one volatile session, not the CLI entrypoint.
+- `submitInput()` will append the user message into session state, emit `session.input_added`, and automatically start the runner if the session is idle.
+- While the runner is active, later inputs are appended and left queued; the session stays single-threaded and processes work sequentially.
+- The `SessionRunner` will execute the current bounded agent loop against OpenRouter and the existing `read`, `write`, and `exec` tools, but all progress will be surfaced as emitted events instead of direct inline CLI tracing.
+- `getSnapshot()` will return the current full session state for debug inspection.
+- Subscribers are session-scoped only in V1 and receive full payloads for every emitted event.
+- Tool failures are data, not fatal boundaries: the failed result is appended into session history, emitted, and then the LLM gets another turn.
+- The CLI remains as a debug client only: create session, submit input, subscribe to events, and print snapshots/events to the console.
 
 ## RECENT
 
-- Tightened the `write` tool contract from `filePath` plus patch content to a single `patch` string that matches the real apply-patch executor.
+- Rewrite target changed from "CLI with loop" to "server-style session runtime with debug CLI client".
 
 ## ARCHIVE
