@@ -1,13 +1,16 @@
 import path from "node:path";
 import readline from "node:readline/promises";
-import { OpenRouterRequestError } from "./openrouter";
+import { OpenRouterRequestError } from "../adapters/llm/openrouter";
 import {
-  SessionManager,
-  type SessionEvent,
-  type SessionSubscriber,
-} from "./session-manager";
-import { exec, read, write } from "./tools/index";
-import type { ExecResult, ReadResult, WriteResult } from "./tools/index";
+  exec,
+  read,
+  write,
+  type ExecResult,
+  type ReadResult,
+  type WriteResult,
+} from "../adapters/tools";
+import { SessionManager } from "../core/session-manager";
+import type { SessionEvent, SessionSubscriber } from "../shared/session";
 
 type CliConfig = {
   workspaceRoot: string | null;
@@ -49,7 +52,6 @@ function formatTopLevelError(error: unknown) {
 }
 
 async function promptForWorkspaceRoot(): Promise<string> {
-  // Keep the fallback explicit: if --cwd is missing, ask once on stdin.
   const rl = readline.createInterface({
     input: process.stdin,
     output: process.stdout,
@@ -250,8 +252,8 @@ function logToolResult(iteration: number, toolName: string, result: unknown) {
 }
 
 function createEventLogger(): SessionSubscriber {
-  // The CLI now reconstructs the old trace entirely from the session event
-  // stream. That makes the runtime emit facts and leaves formatting here.
+  // The CLI reconstructs the old trace from runtime facts. It formats events
+  // into terminal output, but it does not own session state or execution.
   return (event: SessionEvent) => {
     if (event.type === "tool.called") {
       const payload =
@@ -303,8 +305,8 @@ function createEventLogger(): SessionSubscriber {
       const toolCalls =
         payload && Array.isArray(payload.toolCalls) ? payload.toolCalls : [];
 
-      // A tool-producing assistant turn is already represented by tool events.
-      // The plain message is the user-facing terminal point worth printing.
+      // Tool-producing turns already surface through tool events. The plain
+      // assistant message is the terminal user-facing output worth printing.
       if (toolCalls.length === 0) {
         console.log("---");
         console.log(content ?? "(no content)");

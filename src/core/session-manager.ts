@@ -1,58 +1,12 @@
 import readline from "node:readline/promises";
-import type { OpenRouterMessage } from "./openrouter";
-import {
-  runAgentLoop,
-  SYSTEM_PROMPT,
-  type SessionRunnerConfig,
-} from "./session-runner";
-
-export type SessionManagerConfig = SessionRunnerConfig & {
-  prompt: string;
-};
-
-export type SessionEvent = {
-  seq: number;
-  sessionId: string;
-  type:
-    | "session.created"
-    | "session.input_added"
-    | "session.started"
-    | "llm.requested"
-    | "llm.responded"
-    | "tool.called"
-    | "tool.completed"
-    | "assistant.message"
-    | "session.completed"
-    | "session.failed";
-  timestamp: string;
-  payload: unknown;
-};
-
-export type Session = {
-  id: string;
-  status: "idle" | "running" | "completed" | "failed";
-  config: SessionRunnerConfig;
-  messages: OpenRouterMessage[];
-  events: SessionEvent[];
-  iterationOffset: number;
-  createdAt: string;
-  updatedAt: string;
-  lastError: string | null;
-};
-
-export type SessionSnapshot = {
-  id: string;
-  status: "idle" | "running" | "completed" | "failed";
-  iterationOffset: number;
-  messageCount: number;
-  eventCount: number;
-  lastUserMessage: string | null;
-  lastAssistantMessage: string | null;
-  lastError: string | null;
-  updatedAt: string;
-};
-
-export type SessionSubscriber = (event: SessionEvent) => void;
+import type {
+  Session,
+  SessionEvent,
+  SessionManagerConfig,
+  SessionSnapshot,
+  SessionSubscriber,
+} from "../shared/session";
+import { runAgentLoop, SYSTEM_PROMPT } from "./session-runner";
 
 export class SessionManager {
   private readonly session: Session;
@@ -121,14 +75,14 @@ export class SessionManager {
     this.session.events.push(event);
     this.session.updatedAt = event.timestamp;
 
-    // Events are the only outward-facing runtime signal now, so delivery happens
-    // here after the event has been stored. Replaying from `session.events` keeps
-    // late subscribers consistent with live ones.
+    // The core runtime stores the event first, then fans it out to observers.
+    // Replaying from session state later should produce the same visible order.
     for (const subscriber of this.subscribers) {
       try {
         subscriber(event);
       } catch {
-        // Observers are debug surfaces. They must not be able to derail the run.
+        // Subscribers are observers only. Their failures should never reach the
+        // session loop and change runtime behavior.
       }
     }
   }
@@ -148,8 +102,8 @@ export class SessionManager {
   }
 
   subscribe(subscriber: SessionSubscriber) {
-    // `session.created` is emitted during construction, so subscription replays
-    // stored events first and then joins the live stream.
+    // Subscription replays what already happened, including `session.created`,
+    // and then joins the live stream for future events.
     for (const event of this.session.events) {
       subscriber(event);
     }

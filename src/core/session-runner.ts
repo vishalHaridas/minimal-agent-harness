@@ -4,15 +4,9 @@ import {
   type OpenRouterMessage,
   type OpenRouterToolCall,
   type OpenRouterToolDefinition,
-} from "./openrouter";
-import type { Session, SessionEvent } from "./session-manager";
-import { exec, read, summarizePatchScript, write } from "./tools/index";
-
-export type SessionRunnerConfig = {
-  workspaceRoot: string;
-  extraPaths: string[];
-  model: string;
-};
+} from "../adapters/llm/openrouter";
+import { exec, read, summarizePatchScript, write } from "../adapters/tools";
+import type { Session, SessionEvent } from "../shared/session";
 
 export const SYSTEM_PROMPT =
   "You are a local agent working inside the allowed workspace roots. Read files before patching them, send exact apply-patch text to the write tool, and never invent file contents, command output, or write results.";
