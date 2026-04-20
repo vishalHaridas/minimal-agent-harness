@@ -52,10 +52,13 @@ export type SessionSnapshot = {
   updatedAt: string;
 };
 
+export type SessionSubscriber = (event: SessionEvent) => void;
+
 export class SessionManager {
   private readonly session: Session;
   private nextEventSeq: number;
   private pendingPrompt: string;
+  private readonly subscribers: Set<SessionSubscriber>;
 
   constructor(config: SessionManagerConfig) {
     const timestamp = new Date().toISOString();
@@ -81,6 +84,7 @@ export class SessionManager {
     };
     this.nextEventSeq = 1;
     this.pendingPrompt = config.prompt;
+    this.subscribers = new Set();
     this.emit("session.created", {
       model: this.session.config.model,
       workspaceRoot: this.session.config.workspaceRoot,
@@ -116,6 +120,17 @@ export class SessionManager {
     this.nextEventSeq += 1;
     this.session.events.push(event);
     this.session.updatedAt = event.timestamp;
+
+    // Events are the only outward-facing runtime signal now, so delivery happens
+    // here after the event has been stored. Replaying from `session.events` keeps
+    // late subscribers consistent with live ones.
+    for (const subscriber of this.subscribers) {
+      try {
+        subscriber(event);
+      } catch {
+        // Observers are debug surfaces. They must not be able to derail the run.
+      }
+    }
   }
 
   getSnapshot(): SessionSnapshot {
@@ -129,6 +144,20 @@ export class SessionManager {
       lastAssistantMessage: this.getLastMessageContent("assistant"),
       lastError: this.session.lastError,
       updatedAt: this.session.updatedAt,
+    };
+  }
+
+  subscribe(subscriber: SessionSubscriber) {
+    // `session.created` is emitted during construction, so subscription replays
+    // stored events first and then joins the live stream.
+    for (const event of this.session.events) {
+      subscriber(event);
+    }
+
+    this.subscribers.add(subscriber);
+
+    return () => {
+      this.subscribers.delete(subscriber);
     };
   }
 
