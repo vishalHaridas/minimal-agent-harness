@@ -5,6 +5,7 @@ import {
   type OpenRouterToolCall,
   type OpenRouterToolDefinition,
 } from "./openrouter";
+import type { Session, SessionEvent } from "./session-manager";
 import type { ExecResult, ReadResult, WriteResult } from "./tools/index";
 import { exec, read, summarizePatchScript, write } from "./tools/index";
 
@@ -254,16 +255,23 @@ function parseToolArguments(toolCall: OpenRouterToolCall) {
 }
 
 async function runToolCall(
-  config: SessionRunnerConfig,
+  session: Session,
   iteration: number,
   toolCall: OpenRouterToolCall,
+  emit: (type: SessionEvent["type"], payload: unknown) => void,
 ): Promise<OpenRouterMessage> {
   const args = parseToolArguments(toolCall);
   const toolName = toolCall.function.name;
   const toolContext = {
-    workspaceRoot: config.workspaceRoot,
-    extraPaths: config.extraPaths,
+    workspaceRoot: session.config.workspaceRoot,
+    extraPaths: session.config.extraPaths,
   };
+  emit("tool.called", {
+    iteration,
+    toolCallId: toolCall.id,
+    toolName,
+    arguments: args,
+  });
   console.log("---");
   logAssistantToolCall(iteration, toolCall);
 
@@ -291,7 +299,7 @@ async function runToolCall(
       };
     } else if (toolName === "exec") {
       result = await exec(
-        config.workspaceRoot,
+        session.config.workspaceRoot,
         getRequiredString(args, "command", toolName),
         getOptionalPositiveNumber(args, "timeoutMs"),
       );
@@ -309,6 +317,12 @@ async function runToolCall(
   }
 
   logToolResult(iteration, toolName, result);
+  emit("tool.completed", {
+    iteration,
+    toolCallId: toolCall.id,
+    toolName,
+    result,
+  });
 
   return {
     role: "tool",
@@ -318,19 +332,28 @@ async function runToolCall(
 }
 
 export async function runAgentLoop(
-  config: SessionRunnerConfig,
-  messages: OpenRouterMessage[],
-  iterationOffset = 0,
+  session: Session,
+  emit: (type: SessionEvent["type"], payload: unknown) => void,
 ) {
   let iteration = 1;
   while (true) {
+    emit("llm.requested", {
+      iteration: session.iterationOffset + iteration,
+      messageCount: session.messages.length,
+      messages: session.messages,
+      model: session.config.model,
+    });
     const response = await callOpenRouter({
-      model: config.model,
-      messages,
+      model: session.config.model,
+      messages: session.messages,
       tools: TOOL_DEFINITIONS,
     });
     const choice = response.choices?.[0];
     const assistantMessage = choice?.message;
+    emit("llm.responded", {
+      iteration: session.iterationOffset + iteration,
+      summary: summarizeChoices(response)[0] ?? null,
+    });
 
     if (!assistantMessage) {
       throw new Error("OpenRouter response did not include an assistant message.");
@@ -342,17 +365,27 @@ export async function runAgentLoop(
       tool_calls: assistantMessage.tool_calls,
     };
 
-    messages.push(nextAssistantMessage);
+    session.messages.push(nextAssistantMessage);
+    emit("assistant.message", {
+      iteration: session.iterationOffset + iteration,
+      content: nextAssistantMessage.content,
+      toolCalls: nextAssistantMessage.tool_calls ?? [],
+    });
 
     const toolCalls = assistantMessage.tool_calls ?? [];
     if (toolCalls.length === 0) {
       logAssistantFinal(summarizeChoices(response)[0]?.content ?? null);
-      return iterationOffset + iteration;
+      return session.iterationOffset + iteration;
     }
 
     for (const toolCall of toolCalls) {
-      messages.push(
-        await runToolCall(config, iterationOffset + iteration, toolCall),
+      session.messages.push(
+        await runToolCall(
+          session,
+          session.iterationOffset + iteration,
+          toolCall,
+          emit,
+        ),
       );
     }
 
