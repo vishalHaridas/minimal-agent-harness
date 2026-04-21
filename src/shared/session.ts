@@ -7,9 +7,7 @@ export type SessionRunnerConfig = {
   model: string;
 };
 
-export type SessionManagerConfig = SessionRunnerConfig & {
-  prompt: string;
-};
+export type SessionManagerConfig = SessionRunnerConfig;
 
 export type SessionEvent = {
   seq: number;
