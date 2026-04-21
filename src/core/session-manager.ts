@@ -1,4 +1,3 @@
-import readline from "node:readline/promises";
 import type {
   Session,
   SessionEvent,
@@ -13,7 +12,6 @@ import { runAgentStep, SYSTEM_PROMPT } from "./session-runner";
 export class SessionManager {
   private readonly session: Session;
   private nextEventSeq: number;
-  private pendingPrompt: string;
   private readonly subscribers: Set<SessionSubscriber>;
   private turnCompletion: Promise<void> | null;
   private resolveTurnCompletion: (() => void) | null;
@@ -42,7 +40,6 @@ export class SessionManager {
       lastError: null,
     };
     this.nextEventSeq = 1;
-    this.pendingPrompt = config.prompt;
     this.subscribers = new Set();
     this.turnCompletion = null;
     this.resolveTurnCompletion = null;
@@ -177,9 +174,8 @@ export class SessionManager {
     this.setStatus("running");
 
     try {
-      const outcome = await runAgentStep(
-        this.session,
-        (type, payload) => this.emit(type, payload),
+      const outcome = await runAgentStep(this.session, (type, payload) =>
+        this.emit(type, payload),
       );
       this.session.iterationOffset = outcome.iterationOffset;
 
@@ -203,6 +199,27 @@ export class SessionManager {
 
   private waitForTurnCompletion() {
     return this.turnCompletion ?? Promise.resolve();
+  }
+
+  async submitPrompt(prompt: string) {
+    const input = prompt.trim();
+
+    if (!input) {
+      return;
+    }
+
+    if (
+      this.session.status === "running" ||
+      this.session.status === "waiting_for_tool"
+    ) {
+      throw new Error("Cannot submit a prompt while the session is running.");
+    }
+
+    this.startSession();
+    this.addUserInput(input);
+
+    await this.runModelStep();
+    await this.waitForTurnCompletion();
   }
 
   async submitToolResult(submission: ToolResultSubmission) {
@@ -250,31 +267,5 @@ export class SessionManager {
     }
 
     await this.runModelStep();
-  }
-
-  async runInteractiveSession() {
-    const rl = readline.createInterface({
-      input: process.stdin,
-      output: process.stdout,
-    });
-
-    try {
-      while (true) {
-        const prompt = (this.pendingPrompt || (await rl.question(""))).trim();
-        this.pendingPrompt = "";
-
-        if (!prompt) {
-          continue;
-        }
-
-        this.startSession();
-        this.addUserInput(prompt);
-
-        await this.runModelStep();
-        await this.waitForTurnCompletion();
-      }
-    } finally {
-      rl.close();
-    }
   }
 }
