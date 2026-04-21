@@ -1,4 +1,5 @@
 import type { OpenRouterMessage } from "../adapters/llm/openrouter";
+import type { OpenRouterToolCall } from "../adapters/llm/openrouter";
 
 export type SessionRunnerConfig = {
   workspaceRoot: string;
@@ -19,7 +20,7 @@ export type SessionEvent = {
     | "session.started"
     | "llm.requested"
     | "llm.responded"
-    | "tool.called"
+    | "tool.requested"
     | "tool.completed"
     | "assistant.message"
     | "session.completed"
@@ -28,12 +29,31 @@ export type SessionEvent = {
   payload: unknown;
 };
 
+export type PendingToolCall = {
+  iteration: number;
+  toolCall: OpenRouterToolCall;
+  resolved: boolean;
+};
+
+export type ToolResultSubmission = {
+  toolCallId: string;
+  result: unknown;
+};
+
+export type SessionStatus =
+  | "idle"
+  | "running"
+  | "waiting_for_tool"
+  | "completed"
+  | "failed";
+
 export type Session = {
   id: string;
-  status: "idle" | "running" | "completed" | "failed";
+  status: SessionStatus;
   config: SessionRunnerConfig;
   messages: OpenRouterMessage[];
   events: SessionEvent[];
+  pendingToolCalls: PendingToolCall[];
   iterationOffset: number;
   createdAt: string;
   updatedAt: string;
@@ -42,10 +62,11 @@ export type Session = {
 
 export type SessionSnapshot = {
   id: string;
-  status: "idle" | "running" | "completed" | "failed";
+  status: SessionStatus;
   iterationOffset: number;
   messageCount: number;
   eventCount: number;
+  pendingToolCallIds: string[];
   lastUserMessage: string | null;
   lastAssistantMessage: string | null;
   lastError: string | null;

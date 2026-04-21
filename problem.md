@@ -25,11 +25,12 @@
   - Read: session state, event stream, provider response, and pending tool calls
   - Update: append messages, pending tool state, session status, and emitted events
   - Discard: process-local sessions at server shutdown
-- First implementation target: carve a hard execution boundary between `tool.requested` and `tool.completed` so the current CLI becomes the single client-side tool worker without changing the rest of the turn loop yet.
+- Phase result: the hard execution boundary between `tool.requested` and `tool.completed` is in place. The current CLI is the single client-side tool worker, multi-tool assistant turns still run sequentially, and the next phase is a small control-flow rewrite so one central turn driver owns pause/resume.
 
 ## RECENT
 
 - The codebase now uses explicit boundaries: `src/clients` for the debug CLI, `src/core` for session runtime, `src/adapters` for OpenRouter and local tools, and `src/shared` for session contracts.
 - Logging responsibility moved entirely to the client. The runtime now emits facts only, and the CLI reconstructs the trace by subscribing to session events.
+- Current phase ended with tool execution outside the runner, but turn continuation is still split between `runInteractiveSession()` and `submitToolResult()`.
 
 ## ARCHIVE

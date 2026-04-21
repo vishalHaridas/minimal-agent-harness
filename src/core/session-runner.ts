@@ -2,10 +2,8 @@ import {
   callOpenRouter,
   summarizeChoices,
   type OpenRouterMessage,
-  type OpenRouterToolCall,
   type OpenRouterToolDefinition,
 } from "../adapters/llm/openrouter";
-import { exec, read, summarizePatchScript, write } from "../adapters/tools";
 import type { Session, SessionEvent } from "../shared/session";
 
 export const SYSTEM_PROMPT =
@@ -80,38 +78,9 @@ export const TOOL_DEFINITIONS: OpenRouterToolDefinition[] = [
   },
 ];
 
-function getRequiredString(
-  args: Record<string, unknown>,
-  key: string,
-  toolName: string,
-) {
-  const value = args[key];
-
-  if (typeof value !== "string" || value.length === 0) {
-    throw new Error(`Tool "${toolName}" requires a non-empty string "${key}".`);
-  }
-
-  return value;
-}
-
-function getOptionalPositiveNumber(
-  args: Record<string, unknown>,
-  key: string,
-): number | undefined {
-  const value = args[key];
-
-  if (value === undefined) {
-    return undefined;
-  }
-
-  if (typeof value !== "number" || !Number.isFinite(value) || value < 1) {
-    throw new Error(`Optional field "${key}" must be a positive number.`);
-  }
-
-  return value;
-}
-
-function parseToolArguments(toolCall: OpenRouterToolCall) {
+export function parseToolArguments(toolCall: {
+  function: { name: string; arguments: string };
+}) {
   let parsed: unknown;
 
   try {
@@ -131,85 +100,11 @@ function parseToolArguments(toolCall: OpenRouterToolCall) {
   return parsed as Record<string, unknown>;
 }
 
-async function runToolCall(
-  session: Session,
-  iteration: number,
-  toolCall: OpenRouterToolCall,
-  emit: (type: SessionEvent["type"], payload: unknown) => void,
-): Promise<OpenRouterMessage> {
-  const args = parseToolArguments(toolCall);
-  const toolName = toolCall.function.name;
-  const toolContext = {
-    workspaceRoot: session.config.workspaceRoot,
-    extraPaths: session.config.extraPaths,
-  };
-  emit("tool.called", {
-    iteration,
-    toolCallId: toolCall.id,
-    toolName,
-    arguments: args,
-  });
-
-  let result: unknown;
-  try {
-    if (toolName === "read") {
-      result = await read(
-        toolContext,
-        getRequiredString(args, "filePath", toolName),
-        getOptionalPositiveNumber(args, "maxReadBytes"),
-      );
-    } else if (toolName === "write") {
-      const patch = getRequiredString(args, "patch", toolName);
-      const patchSummary = summarizePatchScript(patch);
-
-      if (patchSummary.length === 0) {
-        throw new Error('Tool "write" requires at least one patch operation.');
-      }
-
-      const writeResult = await write(toolContext, patchSummary[0].path, patch);
-
-      result = {
-        ...writeResult,
-        patchSummary,
-      };
-    } else if (toolName === "exec") {
-      result = await exec(
-        session.config.workspaceRoot,
-        getRequiredString(args, "command", toolName),
-        getOptionalPositiveNumber(args, "timeoutMs"),
-      );
-    } else {
-      result = {
-        ok: false,
-        error: `Unknown tool: ${toolName}`,
-      };
-    }
-  } catch (error) {
-    result = {
-      ok: false,
-      error: error instanceof Error ? error.message : String(error),
-    };
-  }
-
-  emit("tool.completed", {
-    iteration,
-    toolCallId: toolCall.id,
-    toolName,
-    result,
-  });
-
-  return {
-    role: "tool",
-    tool_call_id: toolCall.id,
-    content: JSON.stringify(result, null, 2),
-  };
-}
-
 export async function runAgentLoop(
   session: Session,
   emit: (type: SessionEvent["type"], payload: unknown) => void,
 ) {
-  let iteration = 1;
+  const iteration = 1;
   while (true) {
     emit("llm.requested", {
       iteration: session.iterationOffset + iteration,
@@ -253,17 +148,30 @@ export async function runAgentLoop(
       return session.iterationOffset + iteration;
     }
 
+    const absoluteIteration = session.iterationOffset + iteration;
+
+    // This is the new hard stop: core records every tool the model requested,
+    // emits them in model order, then waits. The client owns side effects; core
+    // owns the transcript and will not call the model again until every result
+    // for this assistant turn has been appended.
+    session.pendingToolCalls = toolCalls.map((toolCall) => ({
+      iteration: absoluteIteration,
+      toolCall,
+      resolved: false,
+    }));
+    session.status = "waiting_for_tool";
+
     for (const toolCall of toolCalls) {
-      session.messages.push(
-        await runToolCall(
-          session,
-          session.iterationOffset + iteration,
-          toolCall,
-          emit,
-        ),
-      );
+      const args = parseToolArguments(toolCall);
+
+      emit("tool.requested", {
+        iteration: absoluteIteration,
+        toolCallId: toolCall.id,
+        toolName: toolCall.function.name,
+        arguments: args,
+      });
     }
 
-    iteration += 1;
+    return absoluteIteration;
   }
 }

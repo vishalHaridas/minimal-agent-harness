@@ -4,6 +4,7 @@ import { OpenRouterRequestError } from "../adapters/llm/openrouter";
 import {
   exec,
   read,
+  summarizePatchScript,
   write,
   type ExecResult,
   type ReadResult,
@@ -231,6 +232,122 @@ function summarizeToolResult(toolName: string, result: unknown) {
   return collapseWhitespace(JSON.stringify(result));
 }
 
+function getRequiredString(
+  args: Record<string, unknown>,
+  key: string,
+  toolName: string,
+) {
+  const value = args[key];
+
+  if (typeof value !== "string" || value.length === 0) {
+    throw new Error(`Tool "${toolName}" requires a non-empty string "${key}".`);
+  }
+
+  return value;
+}
+
+function getOptionalPositiveNumber(
+  args: Record<string, unknown>,
+  key: string,
+): number | undefined {
+  const value = args[key];
+
+  if (value === undefined) {
+    return undefined;
+  }
+
+  if (typeof value !== "number" || !Number.isFinite(value) || value < 1) {
+    throw new Error(`Optional field "${key}" must be a positive number.`);
+  }
+
+  return value;
+}
+
+async function runClientTool(
+  config: CliConfig,
+  toolName: string,
+  args: Record<string, unknown>,
+) {
+  const workspaceRoot = config.workspaceRoot;
+
+  if (!workspaceRoot) {
+    throw new Error("Missing workspace root for tool execution.");
+  }
+
+  const toolContext = {
+    workspaceRoot,
+    extraPaths: config.extraPaths,
+  };
+
+  if (toolName === "read") {
+    return read(
+      toolContext,
+      getRequiredString(args, "filePath", toolName),
+      getOptionalPositiveNumber(args, "maxReadBytes"),
+    );
+  }
+
+  if (toolName === "write") {
+    const patch = getRequiredString(args, "patch", toolName);
+    const patchSummary = summarizePatchScript(patch);
+
+    if (patchSummary.length === 0) {
+      throw new Error('Tool "write" requires at least one patch operation.');
+    }
+
+    const writeResult = await write(toolContext, patchSummary[0].path, patch);
+
+    return {
+      ...writeResult,
+      patchSummary,
+    };
+  }
+
+  if (toolName === "exec") {
+    return exec(
+      workspaceRoot,
+      getRequiredString(args, "command", toolName),
+      getOptionalPositiveNumber(args, "timeoutMs"),
+    );
+  }
+
+  return {
+    ok: false,
+    error: `Unknown tool: ${toolName}`,
+  };
+}
+
+async function submitClientToolResult(
+  config: CliConfig,
+  session: SessionManager,
+  payload: Record<string, unknown>,
+) {
+  const toolCallId =
+    typeof payload.toolCallId === "string" ? payload.toolCallId : "";
+  const toolName = typeof payload.toolName === "string" ? payload.toolName : "";
+  const args =
+    payload.arguments && typeof payload.arguments === "object"
+      ? (payload.arguments as Record<string, unknown>)
+      : {};
+
+  let result: unknown;
+  try {
+    result = await runClientTool(config, toolName, args);
+  } catch (error) {
+    result = {
+      ok: false,
+      error: error instanceof Error ? error.message : String(error),
+    };
+  }
+
+  // The CLI is intentionally the only tool executor in this phase. The core
+  // accepts only the current pending id, so a stale or duplicate submit fails.
+  await session.submitToolResult({
+    toolCallId,
+    result,
+  });
+}
+
 function logToolResult(iteration: number, toolName: string, result: unknown) {
   const ok =
     result &&
@@ -251,17 +368,24 @@ function logToolResult(iteration: number, toolName: string, result: unknown) {
   );
 }
 
-function createEventLogger(): SessionSubscriber {
-  // The CLI reconstructs the old trace from runtime facts. It formats events
-  // into terminal output, but it does not own session state or execution.
+function createEventLogger(
+  config: CliConfig,
+  session: SessionManager,
+): SessionSubscriber {
+  // The CLI now has two jobs at the boundary: keep the human trace readable
+  // and perform the one local side effect requested by core.
+  let toolQueue = Promise.resolve();
+
   return (event: SessionEvent) => {
-    if (event.type === "tool.called") {
+    if (event.type === "tool.requested") {
       const payload =
         event.payload && typeof event.payload === "object"
           ? (event.payload as Record<string, unknown>)
           : null;
       const iteration =
-        payload && typeof payload.iteration === "number" ? payload.iteration : 0;
+        payload && typeof payload.iteration === "number"
+          ? payload.iteration
+          : 0;
       const toolName =
         payload && typeof payload.toolName === "string" ? payload.toolName : "";
       const args =
@@ -275,6 +399,22 @@ function createEventLogger(): SessionSubscriber {
       console.log(
         `t${iteration}  assistant  tool_call ${toolName}   ${quoteInline(command)}`,
       );
+
+      // Events are delivered synchronously, but tool execution is async. This
+      // queue preserves the old runner behavior: tool calls from one assistant
+      // turn run one after another in the same order the model emitted them.
+      toolQueue = toolQueue.then(() =>
+        submitClientToolResult(config, session, payload ?? {}).catch(
+          (error: unknown) => {
+            console.error(formatTopLevelError(error));
+          },
+        ),
+      );
+      void toolQueue.catch((error: unknown) => {
+        if (error) {
+          console.error(formatTopLevelError(error));
+        }
+      });
       return;
     }
 
@@ -284,7 +424,9 @@ function createEventLogger(): SessionSubscriber {
           ? (event.payload as Record<string, unknown>)
           : null;
       const iteration =
-        payload && typeof payload.iteration === "number" ? payload.iteration : 0;
+        payload && typeof payload.iteration === "number"
+          ? payload.iteration
+          : 0;
       const toolName =
         payload && typeof payload.toolName === "string" ? payload.toolName : "";
       const result = payload ? payload.result : null;
@@ -299,7 +441,8 @@ function createEventLogger(): SessionSubscriber {
           ? (event.payload as Record<string, unknown>)
           : null;
       const content =
-        payload && (typeof payload.content === "string" || payload.content === null)
+        payload &&
+        (typeof payload.content === "string" || payload.content === null)
           ? payload.content
           : null;
       const toolCalls =
@@ -379,7 +522,7 @@ async function main() {
     model: config.model,
     prompt: config.prompt,
   });
-  const unsubscribe = session.subscribe(createEventLogger());
+  const unsubscribe = session.subscribe(createEventLogger(config, session));
 
   try {
     await session.runInteractiveSession();

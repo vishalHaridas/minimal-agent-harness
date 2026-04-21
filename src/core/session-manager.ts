@@ -5,6 +5,7 @@ import type {
   SessionManagerConfig,
   SessionSnapshot,
   SessionSubscriber,
+  ToolResultSubmission,
 } from "../shared/session";
 import { runAgentLoop, SYSTEM_PROMPT } from "./session-runner";
 
@@ -13,6 +14,7 @@ export class SessionManager {
   private nextEventSeq: number;
   private pendingPrompt: string;
   private readonly subscribers: Set<SessionSubscriber>;
+  private toolWaiter: (() => void) | null;
 
   constructor(config: SessionManagerConfig) {
     const timestamp = new Date().toISOString();
@@ -31,6 +33,7 @@ export class SessionManager {
         },
       ],
       events: [],
+      pendingToolCalls: [],
       iterationOffset: 0,
       createdAt: timestamp,
       updatedAt: timestamp,
@@ -39,6 +42,7 @@ export class SessionManager {
     this.nextEventSeq = 1;
     this.pendingPrompt = config.prompt;
     this.subscribers = new Set();
+    this.toolWaiter = null;
     this.emit("session.created", {
       model: this.session.config.model,
       workspaceRoot: this.session.config.workspaceRoot,
@@ -94,6 +98,9 @@ export class SessionManager {
       iterationOffset: this.session.iterationOffset,
       messageCount: this.session.messages.length,
       eventCount: this.session.events.length,
+      pendingToolCallIds: this.session.pendingToolCalls
+        .filter((pending) => !pending.resolved)
+        .map((pending) => pending.toolCall.id),
       lastUserMessage: this.getLastMessageContent("user"),
       lastAssistantMessage: this.getLastMessageContent("assistant"),
       lastError: this.session.lastError,
@@ -150,6 +157,87 @@ export class SessionManager {
     });
   }
 
+  private async runTurnUntilBlockedOrComplete() {
+    this.session.status = "running";
+    this.session.iterationOffset = await runAgentLoop(
+      this.session,
+      (type, payload) => this.emit(type, payload),
+    );
+
+    // `waiting_for_tool` means the runner intentionally paused after emitting
+    // one or more requests. Completion only means no tool work is left for the
+    // current assistant turn.
+    if (this.session.pendingToolCalls.length === 0) {
+      this.completeSession();
+    }
+  }
+
+  private waitForToolResult() {
+    if (this.session.status !== "waiting_for_tool") {
+      return Promise.resolve();
+    }
+
+    return new Promise<void>((resolve) => {
+      this.toolWaiter = resolve;
+    });
+  }
+
+  async submitToolResult(submission: ToolResultSubmission) {
+    const pending = this.session.pendingToolCalls[0];
+
+    if (!pending) {
+      throw new Error("No pending tool call is waiting for a result.");
+    }
+
+    if (pending.resolved) {
+      throw new Error("Pending tool call has already been resolved.");
+    }
+
+    if (pending.toolCall.id !== submission.toolCallId) {
+      throw new Error(
+        `Tool result id ${submission.toolCallId} does not match next pending tool call ${pending.toolCall.id}.`,
+      );
+    }
+
+    const toolName = pending.toolCall.function.name;
+    pending.resolved = true;
+    this.emit("tool.completed", {
+      iteration: pending.iteration,
+      toolCallId: pending.toolCall.id,
+      toolName,
+      result: submission.result,
+    });
+
+    // The model can only continue after the client-side side effect is turned
+    // back into the provider's expected tool message shape.
+    this.session.messages.push({
+      role: "tool",
+      tool_call_id: pending.toolCall.id,
+      content: JSON.stringify(submission.result, null, 2),
+    });
+
+    this.session.pendingToolCalls.shift();
+
+    // Old behavior was sequential: if the model requested A, B, and C in one
+    // turn, the runtime appended tool result A, then B, then C, and only then
+    // asked the model for the next assistant turn. Keeping that shape matters
+    // because tool calls can depend on previous filesystem side effects.
+    if (this.session.pendingToolCalls.length > 0) {
+      return;
+    }
+
+    try {
+      await this.runTurnUntilBlockedOrComplete();
+      this.toolWaiter?.();
+      this.toolWaiter = null;
+    } catch (error) {
+      this.failSession(error);
+      this.toolWaiter?.();
+      this.toolWaiter = null;
+      throw error;
+    }
+  }
+
   async runInteractiveSession() {
     const rl = readline.createInterface({
       input: process.stdin,
@@ -169,12 +257,10 @@ export class SessionManager {
         this.addUserInput(prompt);
 
         try {
-          this.session.iterationOffset = await runAgentLoop(
-            this.session,
-            (type, payload) => this.emit(type, payload),
-          );
-
-          this.completeSession();
+          await this.runTurnUntilBlockedOrComplete();
+          while (this.session.status === "waiting_for_tool") {
+            await this.waitForToolResult();
+          }
         } catch (error) {
           this.failSession(error);
           throw error;
