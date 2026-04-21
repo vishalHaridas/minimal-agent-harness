@@ -40,6 +40,22 @@ export type ToolResultSubmission = {
   result: unknown;
 };
 
+export type StepOutcome =
+  | {
+      type: "completed";
+      iterationOffset: number;
+    }
+  | {
+      type: "waiting_for_tool";
+      iterationOffset: number;
+      toolRequests: Array<{
+        iteration: number;
+        toolCallId: string;
+        toolName: string;
+        arguments: Record<string, unknown>;
+      }>;
+    };
+
 export type SessionStatus =
   | "idle"
   | "running"

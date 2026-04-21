@@ -4,10 +4,10 @@ import {
   type OpenRouterMessage,
   type OpenRouterToolDefinition,
 } from "../adapters/llm/openrouter";
-import type { Session, SessionEvent } from "../shared/session";
+import type { Session, SessionEvent, StepOutcome } from "../shared/session";
 
 export const SYSTEM_PROMPT =
-  "You are a local agent working inside the allowed workspace roots. Read files before patching them, send exact apply-patch text to the write tool, and never invent file contents, command output, or write results.";
+  "You are a local agent working inside the allowed workspace roots. You have access to a few tools";
 
 export const TOOL_DEFINITIONS: OpenRouterToolDefinition[] = [
   {
@@ -100,78 +100,76 @@ export function parseToolArguments(toolCall: {
   return parsed as Record<string, unknown>;
 }
 
-export async function runAgentLoop(
+export async function runAgentStep(
   session: Session,
   emit: (type: SessionEvent["type"], payload: unknown) => void,
-) {
+): Promise<StepOutcome> {
   const iteration = 1;
-  while (true) {
-    emit("llm.requested", {
-      iteration: session.iterationOffset + iteration,
-      messageCount: session.messages.length,
-      messages: session.messages,
-      model: session.config.model,
-    });
-    const response = await callOpenRouter({
-      model: session.config.model,
-      messages: session.messages,
-      tools: TOOL_DEFINITIONS,
-    });
-    const choice = response.choices?.[0];
-    const assistantMessage = choice?.message;
-    emit("llm.responded", {
-      iteration: session.iterationOffset + iteration,
-      summary: summarizeChoices(response)[0] ?? null,
-    });
 
-    if (!assistantMessage) {
-      throw new Error(
-        "OpenRouter response did not include an assistant message.",
-      );
-    }
+  emit("llm.requested", {
+    iteration: session.iterationOffset + iteration,
+    messageCount: session.messages.length,
+    messages: session.messages,
+    model: session.config.model,
+  });
+  const response = await callOpenRouter({
+    model: session.config.model,
+    messages: session.messages,
+    tools: TOOL_DEFINITIONS,
+  });
+  const choice = response.choices?.[0];
+  const assistantMessage = choice?.message;
+  emit("llm.responded", {
+    iteration: session.iterationOffset + iteration,
+    summary: summarizeChoices(response)[0] ?? null,
+  });
 
-    const nextAssistantMessage: OpenRouterMessage = {
-      role: "assistant",
-      content: assistantMessage.content ?? null,
-      tool_calls: assistantMessage.tool_calls,
-    };
-
-    session.messages.push(nextAssistantMessage);
-    emit("assistant.message", {
-      iteration: session.iterationOffset + iteration,
-      content: nextAssistantMessage.content,
-      toolCalls: nextAssistantMessage.tool_calls ?? [],
-    });
-
-    const toolCalls = assistantMessage.tool_calls ?? [];
-    if (toolCalls.length === 0) {
-      return session.iterationOffset + iteration;
-    }
-
-    const absoluteIteration = session.iterationOffset + iteration;
-
-    // This is the new hard stop: core records every tool the model requested,
-    // emits them in model order, then waits. The client owns side effects; core
-    // owns the transcript and will not call the model again until every result
-    // for this assistant turn has been appended.
-    session.pendingToolCalls = toolCalls.map((toolCall) => ({
-      iteration: absoluteIteration,
-      toolCall,
-      resolved: false,
-    }));
-    session.status = "waiting_for_tool";
-
-    for (const toolCall of toolCalls) {
-      const args = parseToolArguments(toolCall);
-
-      emit("tool.requested", {
-        iteration: absoluteIteration,
-        toolCallId: toolCall.id,
-        toolName: toolCall.function.name,
-        arguments: args,
-      });
-    }
-
-    return absoluteIteration;
+  if (!assistantMessage) {
+    throw new Error(
+      "OpenRouter response did not include an assistant message.",
+    );
   }
+
+  const nextAssistantMessage: OpenRouterMessage = {
+    role: "assistant",
+    content: assistantMessage.content ?? null,
+    tool_calls: assistantMessage.tool_calls,
+  };
+
+  session.messages.push(nextAssistantMessage);
+  emit("assistant.message", {
+    iteration: session.iterationOffset + iteration,
+    content: nextAssistantMessage.content,
+    toolCalls: nextAssistantMessage.tool_calls ?? [],
+  });
+
+  const toolCalls = assistantMessage.tool_calls ?? [];
+  if (toolCalls.length === 0) {
+    return {
+      type: "completed",
+      iterationOffset: session.iterationOffset + iteration,
+    };
+  }
+
+  const absoluteIteration = session.iterationOffset + iteration;
+  const toolRequests = toolCalls.map((toolCall) => ({
+    iteration: absoluteIteration,
+    toolCallId: toolCall.id,
+    toolName: toolCall.function.name,
+    arguments: parseToolArguments(toolCall),
+  }));
+
+  // This is the step boundary: after one model response, core either has a
+  // final assistant message or a batch of tool requests for the client to run.
+  session.pendingToolCalls = toolCalls.map((toolCall) => ({
+    iteration: absoluteIteration,
+    toolCall,
+    resolved: false,
+  }));
+
+  return {
+    type: "waiting_for_tool",
+    iterationOffset: absoluteIteration,
+    toolRequests,
+  };
 }

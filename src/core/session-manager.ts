@@ -3,18 +3,20 @@ import type {
   Session,
   SessionEvent,
   SessionManagerConfig,
+  SessionStatus,
   SessionSnapshot,
   SessionSubscriber,
   ToolResultSubmission,
 } from "../shared/session";
-import { runAgentLoop, SYSTEM_PROMPT } from "./session-runner";
+import { runAgentStep, SYSTEM_PROMPT } from "./session-runner";
 
 export class SessionManager {
   private readonly session: Session;
   private nextEventSeq: number;
   private pendingPrompt: string;
   private readonly subscribers: Set<SessionSubscriber>;
-  private toolWaiter: (() => void) | null;
+  private turnCompletion: Promise<void> | null;
+  private resolveTurnCompletion: (() => void) | null;
 
   constructor(config: SessionManagerConfig) {
     const timestamp = new Date().toISOString();
@@ -42,7 +44,8 @@ export class SessionManager {
     this.nextEventSeq = 1;
     this.pendingPrompt = config.prompt;
     this.subscribers = new Set();
-    this.toolWaiter = null;
+    this.turnCompletion = null;
+    this.resolveTurnCompletion = null;
     this.emit("session.created", {
       model: this.session.config.model,
       workspaceRoot: this.session.config.workspaceRoot,
@@ -133,53 +136,73 @@ export class SessionManager {
     });
   }
 
+  private setStatus(status: SessionStatus) {
+    this.session.status = status;
+  }
+
   private startSession() {
-    this.session.status = "running";
+    this.setStatus("running");
+    this.turnCompletion = new Promise((resolve) => {
+      this.resolveTurnCompletion = resolve;
+    });
     this.emit("session.started", {
       iterationOffset: this.session.iterationOffset,
     });
   }
 
   private completeSession() {
-    this.session.status = "completed";
+    this.setStatus("completed");
     this.emit("session.completed", {
       iterationOffset: this.session.iterationOffset,
     });
+    this.resolveTurnCompletion?.();
+    this.turnCompletion = null;
+    this.resolveTurnCompletion = null;
   }
 
   private failSession(error: unknown) {
     const message = error instanceof Error ? error.message : String(error);
-    this.session.status = "failed";
+    this.setStatus("failed");
     this.session.lastError = message;
     this.emit("session.failed", {
       iterationOffset: this.session.iterationOffset,
       error: message,
     });
+    this.resolveTurnCompletion?.();
+    this.turnCompletion = null;
+    this.resolveTurnCompletion = null;
   }
 
-  private async runTurnUntilBlockedOrComplete() {
-    this.session.status = "running";
-    this.session.iterationOffset = await runAgentLoop(
-      this.session,
-      (type, payload) => this.emit(type, payload),
-    );
+  private async runModelStep() {
+    this.setStatus("running");
 
-    // `waiting_for_tool` means the runner intentionally paused after emitting
-    // one or more requests. Completion only means no tool work is left for the
-    // current assistant turn.
-    if (this.session.pendingToolCalls.length === 0) {
-      this.completeSession();
+    try {
+      const outcome = await runAgentStep(
+        this.session,
+        (type, payload) => this.emit(type, payload),
+      );
+      this.session.iterationOffset = outcome.iterationOffset;
+
+      // This is the only place that decides whether the turn is done or paused.
+      // Tool submission only changes transcript state; once the last result is
+      // appended, it calls back here to advance the model again.
+      if (outcome.type === "completed") {
+        this.completeSession();
+        return;
+      }
+
+      this.setStatus("waiting_for_tool");
+      for (const toolRequest of outcome.toolRequests) {
+        this.emit("tool.requested", toolRequest);
+      }
+    } catch (error) {
+      this.failSession(error);
+      throw error;
     }
   }
 
-  private waitForToolResult() {
-    if (this.session.status !== "waiting_for_tool") {
-      return Promise.resolve();
-    }
-
-    return new Promise<void>((resolve) => {
-      this.toolWaiter = resolve;
-    });
+  private waitForTurnCompletion() {
+    return this.turnCompletion ?? Promise.resolve();
   }
 
   async submitToolResult(submission: ToolResultSubmission) {
@@ -226,16 +249,7 @@ export class SessionManager {
       return;
     }
 
-    try {
-      await this.runTurnUntilBlockedOrComplete();
-      this.toolWaiter?.();
-      this.toolWaiter = null;
-    } catch (error) {
-      this.failSession(error);
-      this.toolWaiter?.();
-      this.toolWaiter = null;
-      throw error;
-    }
+    await this.runModelStep();
   }
 
   async runInteractiveSession() {
@@ -256,15 +270,8 @@ export class SessionManager {
         this.startSession();
         this.addUserInput(prompt);
 
-        try {
-          await this.runTurnUntilBlockedOrComplete();
-          while (this.session.status === "waiting_for_tool") {
-            await this.waitForToolResult();
-          }
-        } catch (error) {
-          this.failSession(error);
-          throw error;
-        }
+        await this.runModelStep();
+        await this.waitForTurnCompletion();
       }
     } finally {
       rl.close();
