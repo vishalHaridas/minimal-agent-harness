@@ -1,10 +1,10 @@
 import path from "node:path";
-import { exec, read, write } from "../adapters/tools";
 import { SessionManager } from "../core/session-manager";
 import { parseArgs, printTrace, promptForWorkspaceRoot } from "./cli-config";
 import { fail, formatTopLevelError } from "./cli-errors";
-import { createEventLogger, logToolResult } from "./event-logger";
+import { createEventLogger } from "./event-logger";
 import { runInteractiveClientSession } from "./prompt-input";
+import { runDebug } from "./debug";
 
 async function main() {
   const config = parseArgs(process.argv.slice(2));
@@ -27,36 +27,8 @@ async function main() {
   const workspaceRoot = config.workspaceRoot;
   printTrace(config);
 
-  if (config.debugExecCommand) {
-    const result = await exec(
-      workspaceRoot,
-      config.debugExecCommand,
-      config.debugExecTimeoutMs,
-    );
-    logToolResult(0, "exec", result);
-  }
-
-  if (config.debugReadPath) {
-    const result = await read(
-      {
-        workspaceRoot,
-        extraPaths: config.extraPaths,
-      },
-      config.debugReadPath,
-    );
-    logToolResult(0, "read", result);
-  }
-
-  if (config.debugWritePath && config.debugWriteContent !== null) {
-    const result = await write(
-      {
-        workspaceRoot,
-        extraPaths: config.extraPaths,
-      },
-      config.debugWritePath,
-      config.debugWriteContent,
-    );
-    logToolResult(0, "write", result);
+  if (hasDebugAction) {
+    await runDebug(config);
   }
 
   if (!config.prompt && hasDebugAction) {
